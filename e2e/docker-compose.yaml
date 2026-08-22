@@ -1,0 +1,26 @@
+# Runs the full e2e against a containerized fixture app:
+#   docker compose -f e2e/docker-compose.yaml up --build --abort-on-container-exit --exit-code-from e2e
+# or simply: npm run compose:e2e
+#
+# The `app` container publishes only the main HTTP port. The debug child and
+# the Node inspector stay inside the container on loopback — the e2e reaches
+# the debugger through the app port, as the package intends.
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    environment:
+      INFER_DEBUG: 'true'
+    ports:
+      - '4123:4123'
+
+  e2e:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+    command: ['npx', 'jest', '--config', 'jest.config.e2e.json', '--runInBand']
+    environment:
+      E2E_BASE_URL: 'http://app:4123'
+    depends_on:
+      - app
