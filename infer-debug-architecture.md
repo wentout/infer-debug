@@ -592,6 +592,23 @@ The `touchActivity(source)` method is called from:
 | `childLog` | Child process writes to stdout/stderr |
 | `controller/*` | Any infer-debug controller endpoint is hit |
 
+### What does NOT count as activity
+
+A debugger attached **directly to the child's own inspector port** (default
+9229) bypasses infer-debug entirely — no frame crosses the proxy, so the
+activity timer never resets. The child will be auto-stopped after the idle
+timeout even mid-session, breakpoints and all. Attaching **through** the
+proxy (the CLI bridge, or any client pointed at the app's HTTP port) keeps
+the child alive naturally, because every CDP frame touches the timer.
+
+This is deliberate. Auto-stop exists to guarantee no leaked child processes
+on a long-running server. Exempting "a debugger is attached" would rely on
+`hasActiveDebugger()`, which is a log-buffer scan (`Debugger attached.` vs
+`Debugger ending` lines), not a real socket count — if an "ending" line is
+ever missed (crash, `kill -9`), the child would never auto-stop. A mild UX
+wart is preferred over a possible permanent process leak. The escape hatch
+for long direct sessions is the `idleTimeoutMs` option.
+
 ### Auto-Stop Logic
 
 ```typescript

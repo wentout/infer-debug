@@ -194,6 +194,14 @@ ends your local side of the session. The server-side child stops on its own
 after the idle timeout (3 minutes by default), so an abandoned session cleans
 itself up.
 
+**What counts as activity:** only traffic that passes through infer-debug —
+control API calls, requests proxied to the child, and CDP frames flowing
+through this CLI bridge. A debugger attached **directly to the child's
+inspector port** (9229) bypasses the proxy and does **not** reset the idle
+timer, so a quiet direct session is auto-stopped after the timeout even while
+DevTools is open. Attaching through the bridge keeps the session alive for
+free; for long direct sessions, raise `idleTimeoutMs` in `forRoot()`.
+
 ## TypeScript stack traces (source maps)
 
 Production apps usually run `node --enable-source-maps` — that is the only way

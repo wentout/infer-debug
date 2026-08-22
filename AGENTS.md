@@ -66,6 +66,16 @@ npm test        # jest — must stay green
 5. **`/json/version` and `/json/list` are fixed paths.** Chrome DevTools probes
    these exact URLs on the target host; they cannot move under `basePath`.
 
+6. **Auto-stop ignores `hasActiveDebugger()` on purpose.** Only traffic through
+   infer-debug (control API, proxied requests, WS bridge frames) resets the
+   idle timer — a debugger attached directly to the child's inspector port does
+   not, and the child WILL be stopped mid-session after `idleTimeoutMs`. Do not
+   "fix" this by consulting `hasActiveDebugger()`: that detection is a
+   log-buffer scan and can miss the "Debugger ending" line, turning auto-stop
+   into a permanent child-process leak. The correct fix, if ever needed, is
+   counting real inspector sockets. See "What does NOT count as activity" in
+   `infer-debug-architecture.md`.
+
 ## Linked (`file:`) development
 
 When a host app consumes this package via `"infer-debug": "file:../infer-debug"`,
