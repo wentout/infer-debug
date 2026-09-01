@@ -1,6 +1,6 @@
 {
   "name": "infer-debug",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "In-process debug proxy for NestJS (Express): attach Chrome DevTools to selected endpoints of a running app via a spawned child process, without --inspect on the main process.",
   "license": "MIT",
   "main": "dist/index.js",

@@ -225,11 +225,20 @@ export class InferDebugService implements OnModuleInit, OnApplicationBootstrap, 
     this.child.stdout?.pipe(this.createLogBufferTransform()).pipe(this.createPrefixTransform('\x1b[33m[Child]\x1b[0m')).pipe(process.stdout);
     this.child.stderr?.pipe(this.createLogBufferTransform()).pipe(this.createPrefixTransform('\x1b[31m[Child]\x1b[0m')).pipe(process.stderr);
 
-    await stdoutReady;
-    await this.waitForChildHealth();
-    this.status = 'running';
-    this.touchActivity('startChild');
-    this.logger.log(`[InferDebug] Child ready on port ${this.childPort}, inspector on ${this.options.inspectorPort}`);
+    try {
+      await stdoutReady;
+      await this.waitForChildHealth();
+      this.status = 'running';
+      this.touchActivity('startChild');
+      this.logger.log(`[InferDebug] Child ready on port ${this.childPort}, inspector on ${this.options.inspectorPort}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[InferDebug] Child failed to become ready, stopping it: ${message}`);
+      this.child?.kill('SIGTERM');
+      this.child = null;
+      this.isChildReady = false;
+      this.status = 'stopped';
+    }
   }
 
   stopChild(): void {
@@ -403,7 +412,7 @@ export class InferDebugService implements OnModuleInit, OnApplicationBootstrap, 
       }
     }
 
-    this.logger.error('[InferDebug] Child did not become ready within timeout');
+    throw new Error('[InferDebug] Child did not become ready within timeout');
   }
 
   private waitForChildStdout(stdout: import('stream').Readable | null, pattern: RegExp): Promise<void> {

@@ -7,7 +7,7 @@ const { URL } = require('url');
 
 const DEFAULT_HOST = process.env.INFER_DEBUG_HOST || null;
 const DEFAULT_BASE_PATH = process.env.INFER_DEBUG_BASE_PATH || '/infer-debug';
-const DEFAULT_PORT = 9229;
+const DEFAULT_PORT = Number(process.env.INFER_DEBUG_PORT) || 9229;
 
 // Set in main() once the target is parsed: which protocol to speak and where
 // the control API lives on the target.
@@ -20,7 +20,8 @@ const USAGE = `Usage: infer-debug <host> [localPort] [/route ...]
               - full URL (https://api.example.com)  → that scheme is honored
               - bare host (api.example.com)         → https for remote, http for localhost
               - self-signed certs are tolerated for https
-  localPort   Local proxy port for chrome://inspect (default ${DEFAULT_PORT}).
+  localPort   Local proxy port for chrome://inspect (default ${DEFAULT_PORT};
+              or set INFER_DEBUG_PORT)
   /route      Endpoint(s) to route into the debug child, e.g. '/api/orders/{id}'
   --base-path=/custom   Control API prefix if the server overrode it
                         (or set INFER_DEBUG_BASE_PATH; default /infer-debug)
@@ -301,8 +302,14 @@ async function startDebugSession(hostname, targetPort) {
       return;
     }
 
-    if (statusText.includes('zombie') || statusText.includes('error')) {
+    if (statusText.includes('has zombie') || statusText.includes('error')) {
       throw new Error(`Failed to start: ${statusText}`);
+    }
+
+    // The server settles back to "stopped" when the child dies during start
+    // (spawn error, crash, or health-check timeout) — no point polling on.
+    if (statusText.startsWith('stopped')) {
+      throw new Error(`Failed to start: ${statusText} (child died during start — check server logs)`);
     }
   }
 
@@ -383,6 +390,12 @@ function startLocalProxy(targetHost, targetPort, sourcePort) {
     }
   }
 
+  // chrome://inspect consumes webSocketDebuggerUrl from these payloads, but the
+  // child reports its pod-internal 127.0.0.1:<inspectorPort> — useless from the
+  // laptop. Rewrite loopback URLs to the local port this proxy listens on.
+  const isJsonDiscovery = (req) =>
+    req.method === 'GET' && /^\/json(?:\/(?:list|version))?$/.test((req.url || '').split('?')[0]);
+
   const server = http.createServer((req, res) => {
     const proxyReq = client.request(
       {
@@ -394,8 +407,22 @@ function startLocalProxy(targetHost, targetPort, sourcePort) {
         rejectUnauthorized: false,
       },
       (proxyRes) => {
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-        proxyRes.pipe(res);
+        if (!isJsonDiscovery(req) || proxyRes.statusCode !== 200) {
+          res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+          proxyRes.pipe(res);
+          return;
+        }
+
+        let body = '';
+        proxyRes.on('data', (chunk) => (body += chunk));
+        proxyRes.on('end', () => {
+          const rewritten = body.replace(/127\.0\.0\.1:\d+/g, `127.0.0.1:${sourcePort}`);
+          res.writeHead(proxyRes.statusCode, {
+            ...proxyRes.headers,
+            'content-length': Buffer.byteLength(rewritten),
+          });
+          res.end(rewritten);
+        });
       },
     );
 
@@ -474,6 +501,17 @@ function startLocalProxy(targetHost, targetPort, sourcePort) {
     });
 
     request.pipe(wsReq);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `[InferDebug] Port ${sourcePort} is already in use. Pick another local port or stop the process holding it.`,
+      );
+    } else {
+      console.error('[InferDebug] Local proxy error:', err.message);
+    }
+    process.exit(1);
   });
 
   server.listen(sourcePort, () => {

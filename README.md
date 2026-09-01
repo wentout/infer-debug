@@ -164,7 +164,9 @@ reach it directly. The CLI is the laptop-side bridge that closes that gap. One
 command runs the whole session flow:
 
 1. `GET <basePath>/available` — refuse early if a debugger is attached or a zombie child exists
-2. `POST <basePath>/start` and poll until the child is `running`
+2. `POST <basePath>/start` and poll until the child is `running` — fails fast if the
+   status flips back to `stopped` (child died during start) or reports
+   `has zombie` / `error`, instead of burning the full 2-minute timeout
 3. print inspector info (`/json/version`, `/json/list`) and recent child logs
 4. merge your routes into the registry (`POST <basePath>/routes`)
 5. open a local HTTP/WS proxy on `127.0.0.1:<localPort>` — the address you paste into `chrome://inspect`
@@ -183,6 +185,13 @@ infer-debug <host> [localPort] [/route ...]
   `--option` — fails loudly with the usage text instead of being silently
   misread as a route.
 - Host may also come from `INFER_DEBUG_HOST`.
+- Local proxy port may also come from `INFER_DEBUG_PORT` (default 9229). If the
+  port is already taken, the CLI exits with a clear `EADDRINUSE` message instead
+  of a raw stack.
+- The local proxy rewrites loopback `webSocketDebuggerUrl` values in `/json/list`
+  and `/json/version` responses to `localPort`, so targets discovered via
+  `chrome://inspect` stay clickable when `localPort` differs from the child's
+  inspector port (9229).
 - **Protocol**: a full URL scheme is honored (`http://` stays plain HTTP — handy for
   plain-HTTP stands). A bare host means HTTPS for remote, HTTP for localhost.
   Self-signed certs are tolerated for HTTPS.

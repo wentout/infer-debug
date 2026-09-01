@@ -424,7 +424,7 @@ The `infer-debug` CLI (`bin/infer-debug.js`) is the laptop-side orchestration cl
 │    - Extract host, local port, routes from CLI args                  │
 │    - Host is required (first arg or INFER_DEBUG_HOST env)            │
 │    - Scheme honored: http:// stays plain HTTP; bare remote → https   │
-│    - Default local port: 9229                                        │
+│    - Default local port: 9229 (or INFER_DEBUG_PORT)                  │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -456,7 +456,10 @@ The `infer-debug` CLI (`bin/infer-debug.js`) is the laptop-side orchestration cl
 │    ├─ Poll GET <basePath>/status every 10s                           │
 │    ├─ Max 12 attempts (2 min timeout)                                │
 │    ├─ Print each attempt                                             │
-│    └─ Stop when "running" or error                                   │
+│    ├─ Stop when "running"                                            │
+│    └─ Fail fast on "has zombie" / "error" / "stopped"                │
+│       (server settles back to "stopped" when the child dies          │
+│        during start — a dead start never burns the full timeout)     │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -489,11 +492,14 @@ The `infer-debug` CLI (`bin/infer-debug.js`) is the laptop-side orchestration cl
 │    http.createServer() on local port (default 9229)                  │
 │    │                                                                 │
 │    ├─ HTTP requests → forwarded to remote host:443                   │
+│    │  (GET /json/* responses get loopback URLs rewritten to the      │
+│    │   local port — chrome://inspect targets stay clickable)         │
 │    │                                                                 │
 │    ├─ WebSocket /debug → discover inspector UUID                     │
 │    │   → fetch /json/list from remote                                │
 │    │   → extract UUID                                                │
 │    │   → open wss://remote/uuid                                      │
+│    ├─ EADDRINUSE on local port → clear error + exit 1                │
 │    │                                                                 │
 │    └─ Print connection info:                                         │
 │       "Configure chrome://inspect with 127.0.0.1:9229"              │
@@ -644,6 +650,13 @@ private async autoStopWithZombieCheck(): Promise<void> {
 ```
 
 A "zombie" is specifically: **status = `stopped` but PID is still alive**. Running processes are never zombies, even if their PID is active.
+
+### Start Failure Never Sticks in `starting`
+
+If a spawned child fails to become ready — spawn error, immediate exit, or the
+health check not passing within 12 × 10 s — `startChild()` kills it and settles
+the status back to `stopped`. The service never pins itself in `starting`
+forever, and the CLI polling loop above fails fast on the settled `stopped`.
 
 ---
 
