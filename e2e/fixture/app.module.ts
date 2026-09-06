@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 // The built package, exactly as an external consumer would import it.
-import { InferDebugModule } from '../../dist';
+import { InferDebugModule } from '../../dist/nestjs';
 import { FaultsController } from './faults.controller';
 import { OrdersController } from './orders.controller';
 

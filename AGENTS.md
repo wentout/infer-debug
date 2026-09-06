@@ -5,10 +5,15 @@
 
 ## What this is
 
-`infer-debug` — a standalone, MIT-licensed NestJS package. In-process debug proxy:
-selected HTTP routes are forwarded to a spawned child copy of the app running with
-the Node inspector enabled, so Chrome DevTools can attach to a live request
-without `--inspect` on the main process.
+`infer-debug` — a standalone, MIT-licensed Node.js package. Framework-free
+in-process debug proxy core (`src/core/`, zero framework imports) with thin
+adapters: NestJS module (the original wiring), Express middleware, Fastify
+plugin, or direct use on a raw `http.Server`. Requests carrying the trigger
+header (default `infer-debug`) are forwarded to a spawned child copy of the app
+running with the Node inspector enabled, so Chrome DevTools can attach to a
+live request without `--inspect` on the main process. Proxied responses carry
+the same header back with a DevTools deep link to the child's inspector — the
+"jump" to the secondary debuggable process.
 
 **This package has no upstream project and no history worth mentioning.**
 Do not reference where the code was written, which app it was first used in, or
@@ -19,20 +24,34 @@ use generic URLs (`/api/orders/{id}`, `api.example.com`). Keep it that way.
 
 ```
 src/
-  index.ts                  public exports — keep in sync when adding modules
-  infer-debug.module.ts     forRoot / forRootAsync, middleware wiring
-  infer-debug.controller.ts controller FACTORY (createInferDebugController(basePath))
-  infer-debug.middleware.ts pre-routing interception
-  infer-debug.service.ts    child lifecycle, proxying, log buffer, auto-stop
+  index.ts                  core-only public exports (subpaths: nestjs/express/fastify)
+  nestjs.ts                 barrel for 'infer-debug/nestjs'
+  express.ts                barrel for 'infer-debug/express'
+  fastify.ts                barrel for 'infer-debug/fastify'
+  core/
+    infer-debug-core.ts     InferDebugCore — ALL behavior; no framework imports
+    control-api.ts          control endpoints as plain req/res (non-Nest adapters)
+    http-like.ts            structural req/res types + logger contract
+  infer-debug.module.ts     NestJS forRoot / forRootAsync, middleware wiring
+  infer-debug.controller.ts NestJS controller FACTORY (createInferDebugController(basePath))
+  infer-debug.middleware.ts NestJS pre-routing interception
+  infer-debug.service.ts    NestJS shell: DI + lifecycle, extends InferDebugCore
   infer-debug.options.ts    option types + resolve/normalize helpers
-  swagger.ts                stripInferDebugPaths / setupInferDebugDocs
+  swagger.ts                stripInferDebugPaths / setupInferDebugDocs (NestJS)
   tokens.ts                 INFER_DEBUG_OPTIONS DI token (Symbol)
+  adapters/
+    express/index.ts        createInferDebugMiddleware(core)
+    fastify/index.ts        inferDebugFastifyPlugin (skip-override, onReady/onClose)
   models/
-    route-matcher.ts        swagger-template → regex matching
+    devtools-url.ts         DevTools jump-link builder
     circular-buffer.ts      child log buffer
 bin/
-  infer-debug.js            CLI: remote session manager (start/stop/logs/routes)
-  infer-debug-wrap.js       standalone wrap-proxy alternative (no NestJS wiring)
+  infer-debug.js            CLI: remote session manager (start/stop/logs)
+  infer-debug-wrap.js       standalone wrap-proxy alternative (no wiring at all)
+examples/
+  nest-route-table/         app-side route table: sets the trigger header per
+                            URL template (routes were removed from core)
+  raw-node/                 framework-free usage: handleHttp + attachServer
 test/                       jest unit tests (ts-jest)
 e2e/                        self-contained e2e: fixture app, CDP spec, Dockerfile,
                             docker-compose.yaml (see "E2E & Docker" in README)
@@ -75,6 +94,20 @@ npm test        # jest — must stay green
    into a permanent child-process leak. The correct fix, if ever needed, is
    counting real inspector sockets. See "What does NOT count as activity" in
    `infer-debug-architecture.md`.
+
+7. **The trigger header is consumed, never forwarded.** `proxyToChild` strips
+   the header before proxying. The child inherits the parent's env, so it runs
+   the same enabled infer-debug module — a forwarded header would make the
+   child try to proxy to its own (nonexistent) grandchild and 503. Proxied
+   responses carry the header back instead, with the DevTools jump link.
+
+8. **`src/core/` imports no framework.** No `@nestjs/*`, `express`, or `fastify`
+   imports under `src/core/` — the core speaks `TRequestLike`/`TResponseLike`
+   (structural over `http.IncomingMessage`/`ServerResponse`). New behavior goes
+   to the core; adapters only translate framework lifecycle/routing into core
+   calls. The WS upgrade gate is the uuid-shaped inspector path
+   (`isInspectorUpgradePath`), never the trigger header — DevTools cannot send
+   custom headers on its handshake.
 
 ## Linked (`file:`) development
 

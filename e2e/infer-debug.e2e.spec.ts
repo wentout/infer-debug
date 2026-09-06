@@ -8,8 +8,9 @@ import { CdpClient } from './cdp-client';
  * End-to-end proof that the package does its job on a live app:
  *
  *   1. fixture app boots with InferDebugModule (INFER_DEBUG=true)
- *   2. a registered route is proxied to the spawned debug child (pid changes)
- *   3. non-registered routes stay on the main process
+ *   2. a request carrying the trigger header is proxied to the spawned debug
+ *      child (pid changes), and the response carries the DevTools jump link
+ *   3. requests without the header stay on the main process
  *   4. Chrome DevTools discovery (/json/list) works through the app port
  *   5. a REAL debugger session runs through the proxy: CDP connect, evaluate,
  *      breakpoint in the orders controller, pause, variable inspection, resume
@@ -27,17 +28,27 @@ const FIXTURE_MAIN = path.join(__dirname, 'dist', 'main.js');
 const ORDERS_CONTROLLER_JS = path.join(__dirname, 'dist', 'orders.controller.js');
 const FAULTS_CONTROLLER_JS = path.join(__dirname, 'dist', 'faults.controller.js');
 
-type THttpResult = { status: number; body: string };
+type THttpResult = { status: number; body: string; headers: http.IncomingHttpHeaders };
 
-function httpRequest(method: string, url: string, body?: string, contentType = 'text/plain'): Promise<THttpResult> {
+// The trigger header that routes a request into the debug child (default
+// headerName option; the fixture app doesn't override it).
+const DEBUG_HEADER = { 'infer-debug': '1' };
+
+function httpRequest(
+  method: string,
+  url: string,
+  body?: string,
+  contentType = 'text/plain',
+  headers: Record<string, string> = {},
+): Promise<THttpResult> {
   return new Promise((resolve, reject) => {
     const req = http.request(
       url,
-      { method, headers: body !== undefined ? { 'Content-Type': contentType } : {} },
+      { method, headers: { ...headers, ...(body !== undefined ? { 'Content-Type': contentType } : {}) } },
       (res) => {
         let data = '';
         res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data, headers: res.headers }));
       },
     );
     req.on('error', reject);
@@ -137,14 +148,7 @@ describe('infer-debug e2e', () => {
     }
   });
 
-  it('registers routes and starts the debug child', async () => {
-    // NestJS answers POST with 201 by default; any 2xx is success here.
-    const routes = await httpRequest('POST', `${BASE_URL}/infer-debug/routes`, '/api/orders/{*}\n/api/faults/{*}');
-    expect(routes.status).toBeGreaterThanOrEqual(200);
-    expect(routes.status).toBeLessThan(300);
-    expect(routes.body).toContain('/api/orders/{*}');
-    expect(routes.body).toContain('/api/faults/{*}');
-
+  it('starts the debug child', async () => {
     await httpRequest('POST', `${BASE_URL}/infer-debug/start`);
     await waitFor('child status = running', async () => {
       const res = await httpRequest('GET', `${BASE_URL}/infer-debug/status`);
@@ -152,18 +156,31 @@ describe('infer-debug e2e', () => {
     });
   });
 
-  it('proxies registered routes to the child process', async () => {
-    const res = await httpRequest('GET', `${BASE_URL}/api/orders/1`);
+  it('proxies header-marked requests to the child process', async () => {
+    const res = await httpRequest('GET', `${BASE_URL}/api/orders/1`, undefined, undefined, DEBUG_HEADER);
     expect(res.status).toBe(200);
     childPid = JSON.parse(res.body).pid;
     expect(childPid).toBeGreaterThan(0);
     expect(childPid).not.toBe(mainPid);
+
+    // The response carries the jump header: a DevTools deep link that attaches
+    // to the child's inspector THROUGH the app's own port.
+    const jump = res.headers['infer-debug'];
+    expect(typeof jump).toBe('string');
+    expect(jump).toContain('devtools://devtools/bundled/');
+    const { host } = new URL(BASE_URL);
+    expect(jump).toContain(`ws=${host}/`);
   });
 
-  it('keeps non-registered routes on the main process', async () => {
-    const res = await httpRequest('GET', `${BASE_URL}/healthcheck`);
+  it('keeps unmarked requests on the main process', async () => {
+    const res = await httpRequest('GET', `${BASE_URL}/api/orders/2`);
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body).pid).toBe(mainPid);
+    expect(res.headers['infer-debug']).toBeUndefined();
+
+    const health = await httpRequest('GET', `${BASE_URL}/healthcheck`);
+    expect(health.status).toBe(200);
+    expect(JSON.parse(health.body).pid).toBe(mainPid);
   });
 
   it('exposes Chrome DevTools discovery through the app port', async () => {
@@ -202,10 +219,10 @@ describe('infer-debug e2e', () => {
     const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', { url: scriptUrl, lineNumber: line });
     expect(breakpoint.breakpointId).toBeDefined();
 
-    // 4. Trigger the proxied route — the child must pause inside getOrder.
+    // 4. Trigger the marked route — the child must pause inside getOrder.
     //    Note: Node's inspector leaves callFrames[].url EMPTY in paused events,
     //    so we assert on functionName + our breakpointId in hitBreakpoints.
-    const pendingResponse = httpRequest('GET', `${BASE_URL}/api/orders/42`);
+    const pendingResponse = httpRequest('GET', `${BASE_URL}/api/orders/42`, undefined, undefined, DEBUG_HEADER);
     try {
       const paused = await cdp.waitForEvent('Debugger.paused');
       expect(paused.callFrames[0].functionName).toBe('getOrder');
@@ -258,7 +275,7 @@ describe('infer-debug e2e', () => {
     const bp1 = await cdp.send('Debugger.setBreakpointByUrl', { url: scriptUrl, lineNumber: uncaughtLine });
     expect(bp1.breakpointId).toBeDefined();
 
-    const scheduled1 = await httpRequest('POST', `${BASE_URL}/api/faults/uncaught`);
+    const scheduled1 = await httpRequest('POST', `${BASE_URL}/api/faults/uncaught`, undefined, undefined, DEBUG_HEADER);
     expect(scheduled1.status).toBeLessThan(300);
 
     try {
@@ -285,7 +302,7 @@ describe('infer-debug e2e', () => {
     const bp2 = await cdp.send('Debugger.setBreakpointByUrl', { url: scriptUrl, lineNumber: unhandledLine });
     expect(bp2.breakpointId).toBeDefined();
 
-    const pendingFault = httpRequest('POST', `${BASE_URL}/api/faults/unhandled`);
+    const pendingFault = httpRequest('POST', `${BASE_URL}/api/faults/unhandled`, undefined, undefined, DEBUG_HEADER);
     try {
       const paused = await cdp.waitForEvent('Debugger.paused');
       expect(paused.callFrames[0].functionName).toBe('detonateUnhandled');

@@ -19,6 +19,7 @@ describe('resolveInferDebugOptions', () => {
       childEntry: process.argv[1],
       childPortEnvVar: 'APP_PORT',
       basePath: '/infer-debug',
+      headerName: 'infer-debug',
       childReadyStdoutPattern: undefined,
       healthcheckPath: undefined,
       childPort: undefined,
@@ -50,6 +51,7 @@ describe('resolveInferDebugOptions', () => {
       healthcheckPath: '/healthcheck',
       childPort: 4100,
       basePath: '/dbg',
+      headerName: 'X-Debug-Me',
     });
     expect(resolved.inspectorPort).toBe(9230);
     expect(resolved.idleTimeoutMs).toBe(1000);
@@ -59,6 +61,8 @@ describe('resolveInferDebugOptions', () => {
     expect(resolved.healthcheckPath).toBe('/healthcheck');
     expect(resolved.childPort).toBe(4100);
     expect(resolved.basePath).toBe('/dbg');
+    // header names normalize to lowercase — Node lowercases incoming headers
+    expect(resolved.headerName).toBe('x-debug-me');
   });
 });
 

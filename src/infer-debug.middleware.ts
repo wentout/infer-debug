@@ -18,7 +18,7 @@ export class InferDebugMiddleware implements NestMiddleware {
       return next();
     }
 
-    if (this.debugProxyService.shouldProxy(url)) {
+    if (this.debugProxyService.isMarkedForDebug(req)) {
       return this.debugProxyService.proxyToChild(req, res, url);
     }
 

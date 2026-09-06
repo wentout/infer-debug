@@ -38,6 +38,7 @@ describe('InferDebugService.startChild', () => {
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
     jest.spyOn(service as any, 'waitForChildHealth').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'fetchInspectorTargetId').mockResolvedValue(undefined);
 
     await service.startChild();
 
@@ -52,6 +53,7 @@ describe('InferDebugService.startChild', () => {
     const child = makeFakeChild();
     spawnMock.mockReturnValue(child);
     jest.spyOn(service as any, 'waitForChildHealth').mockRejectedValue(new Error('never ready'));
+    jest.spyOn(service as any, 'fetchInspectorTargetId').mockResolvedValue(undefined);
 
     await service.startChild();
 
@@ -69,5 +71,24 @@ describe('InferDebugService.startChild', () => {
 
     expect(spawnMock).not.toHaveBeenCalled();
     expect((service as any).status).toBe('stopped');
+  });
+});
+
+describe('InferDebugService.isMarkedForDebug', () => {
+  it('triggers on the trigger header presence, any value', () => {
+    const service = makeService();
+    expect(service.isMarkedForDebug({ headers: { 'infer-debug': '1' } } as never)).toBe(true);
+    expect(service.isMarkedForDebug({ headers: { 'infer-debug': '' } } as never)).toBe(true);
+    expect(service.isMarkedForDebug({ headers: {} } as never)).toBe(false);
+  });
+
+  it('honors a custom headerName (normalized to lowercase)', () => {
+    const service = new InferDebugService(
+      { enabled: true, childPort: 3001, headerName: 'X-My-Debug' },
+      makeAdapterHost(),
+    );
+    expect(service.getHeaderName()).toBe('x-my-debug');
+    expect(service.isMarkedForDebug({ headers: { 'x-my-debug': 'yes' } } as never)).toBe(true);
+    expect(service.isMarkedForDebug({ headers: { 'infer-debug': '1' } } as never)).toBe(false);
   });
 });

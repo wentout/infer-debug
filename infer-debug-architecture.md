@@ -5,7 +5,7 @@
 
 ---
 
-## Current State (v0.1.0)
+## Current State (v0.3.0)
 
 1. **Self-attach, no host wiring.** The module implements `NestModule.configure()`
    and applies `InferDebugMiddleware.forRoutes('*')` itself; the WS upgrade hook is
@@ -17,16 +17,31 @@
 3. **Middleware reads `req.originalUrl`, not `req.url`.** Nest 11 converts
    `forRoutes('*')` into a `{*path}` Express 5 wildcard mount, which strips `req.url`
    to `'/'` inside the middleware — `originalUrl` always keeps the real path.
-4. **Upgrade hook leaves foreign sockets alone.** When the child is not ready,
-   `handleUpgrade` returns without touching the socket, so host-app WebSockets keep
-   working for other listeners.
+4. **Upgrade hook only tunnels inspector-shaped paths.** The WS gate is
+   `isChildReady` **and** a uuid-shaped path (`/<target-uuid>`, as `/json/list`
+   reports it) — never the trigger header, because DevTools cannot send custom
+   headers on its WebSocket handshake. Foreign upgrades (socket.io, app
+   WebSockets) are left to other listeners in all states. The path check is
+   routing, not security: the tunnel exists so the host's own sockets survive
+   a debug session, not to authenticate anyone.
+10. **Trigger header, no route registry.** Requests carrying the `infer-debug`
+    header (name configurable via `headerName`) are proxied to the child; the
+    header is consumed, never forwarded, and proxied responses carry it back
+    with a DevTools deep link to the child's inspector. Per-URL selection is
+    app-side (`examples/nest-route-table/`).
+11. **Framework-free core, adapter shells.** `src/core/` (`InferDebugCore`,
+    control API, options, models) imports no framework. The NestJS module /
+    controller / middleware, the Express middleware factory, and the Fastify
+    plugin are thin shells around it; raw Node uses the core directly
+    (`handleHttp` + `attachServer`). Root entry = core only; adapters are
+    subpath exports (`infer-debug/nestjs`, `/express`, `/fastify`).
 5. **Child readiness probes are options.** `healthcheckPath` (e.g. `/healthcheck`)
    and `childReadyStdoutPattern` (e.g. `/Server listening on port/i`); default is a
    plain TCP connect probe — works for any NestJS app.
 6. **Entrypoint is an option.** Default `process.argv[1]` (whatever the host was
    launched with); `childEntry` + `resolveChildEntry()` for alternate entrypoints.
 7. **Control API under a configurable `basePath`** (default `/infer-debug`):
-   `available`, `status`, `start`, `stop`, `routes`, `logs`. The availability
+   `available`, `status`, `start`, `stop`, `logs`. The availability
    endpoint is `<basePath>/available`.
 8. **Swagger via helpers.** `setupInferDebugDocs(app)` mounts a debug-only UI at
    `/infer-debug/docs`; `stripInferDebugPaths(document)` keeps the app's main docs
@@ -56,7 +71,7 @@
 
 ## Overview
 
-The debug proxy is an **in-process debugging system** that allows a developer to attach Chrome DevTools to a specific subset of HTTP endpoints in a running NestJS application. It solves the problem of debugging production-like environments (Kubernetes pods, dev servers) without disrupting normal traffic or duplicating telemetry.
+The debug proxy is an **in-process debugging system** that allows a developer to attach Chrome DevTools to individually header-marked HTTP requests in a running NestJS application. It solves the problem of debugging production-like environments (Kubernetes pods, dev servers) without disrupting normal traffic or duplicating telemetry.
 
 ### Why Not Just `--inspect` on the Main Process?
 
@@ -101,7 +116,7 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 │     │  │  /infer-debug/*  → next()           │   │  (control endpoints)     │
 │     │  │  /json/list      → proxyToInspector │   │  (inspector discovery)   │
 │     │  │  /json/version   → proxyToInspector │   │                          │
-│     │  │  matched routes  → proxyToChild     │   │  (debug traffic)         │
+│     │  │  header-marked    → proxyToChild     │   │  (debug traffic)         │
 │     │  │  everything else → next()           │   │  (normal traffic)        │
 │     │  └─────────────────────────────────────┘   │                          │
 │     │                                            │                          │
@@ -111,7 +126,7 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 │     │  │  ├─ inspectorPort: 9229             │   │                          │
 │     │  │  ├─ childPort: APP_PORT + 1         │   │                          │
 │     │  │  ├─ logBuffer: CircularBuffer       │   │                          │
-│     │  │  └─ route registry                  │   │                          │
+│     │  │  └─ inspectorTargetId               │   │                          │
 │     │  └─────────────────────────────────────┘   │                          │
 │     └─────────────────────────────────────────────┘                          │
 │                           │                                                 │
@@ -150,9 +165,9 @@ In Kubernetes, this is the container port exposed by the Service. The Ingress ro
 
 **Process:** Debug child (spawned on demand)  
 **Listeners:** Express HTTP server (identical to main)  
-**Purpose:** Receives only the HTTP requests that match registered debug routes.
+**Purpose:** Receives only the HTTP requests that carry the trigger header.
 
-The child is spawned with `env: { APP_PORT: String(appPort + 1) }`, so it binds to the next port. The main process proxies matched requests here via `http.request()` to `127.0.0.1:APP_PORT+1`.
+The child is spawned with `env: { APP_PORT: String(appPort + 1) }`, so it binds to the next port. The main process proxies header-marked requests here via `http.request()` to `127.0.0.1:APP_PORT+1`.
 
 ### Port 3: `9229` (Internal — Node.js Inspector)
 
@@ -189,8 +204,8 @@ use(req: Request, res: Response, next: NextFunction): void {
     return next();
   }
 
-  // Matched routes go to child
-  if (this.debugProxyService.shouldProxy(url)) {
+  // Header-marked requests go to the child
+  if (this.debugProxyService.isMarkedForDebug(req)) {
     return this.debugProxyService.proxyToChild(req, res, url);
   }
 
@@ -206,7 +221,7 @@ The `/json/*` endpoints are handled by the controller, not the middleware, so th
 ```typescript
 @Get('/json/list')
 getJsonList(@Req() req: Request, @Res() res: Response): void {
-  if (!this.debugProxyService.shouldProxy(req.url)) {
+  if (!this.debugProxyService.isReady()) {
     res.writeHead(404);
     res.end('Not Found');
     return;
@@ -215,32 +230,56 @@ getJsonList(@Req() req: Request, @Res() res: Response): void {
 }
 ```
 
-The `shouldProxy()` check ensures these endpoints only work when a debug session is active (`isChildReady = true`).
+The `isReady()` check ensures these endpoints only work when a debug session is active (`isChildReady = true` and the child port is known).
 
-### URL Matching (`models/route-matcher.ts`, used by `InferDebugService.shouldProxy`)
+### Trigger Header (`InferDebugService.isMarkedForDebug`)
 
-Routes are stored as swagger-style templates:
-
-```
-/api/orders
-/api/orders/{id}/cancel
-/api/reports/{*}
-```
-
-Matching converts `{param}` to `[^/]+` and a `/{*}` suffix to an optional subtree
-(`(?:/.*)?`), after escaping all other regex metacharacters:
+There is no route registry in the core module. A request goes to the child if
+and only if it carries the trigger header — `infer-debug` by default,
+configurable via the `headerName` option (lowercased at resolve time, since
+Node lowercases all incoming header names):
 
 ```typescript
-export function matchRouteTemplate(template: string, actual: string): boolean {
-  const escaped = template.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const withSubtreeWildcard = escaped.replace(/\/\\\{\\\*\\\}/g, '(?:/.*)?');
-  const parameterized = withSubtreeWildcard.replace(/\\\{[^}]+\\\}/g, '[^/]+');
-  const regex = new RegExp('^' + parameterized + '$');
-  return regex.test(actual);
+isMarkedForDebug(req: Request): boolean {
+  return req.headers[this.options.headerName] !== undefined;
 }
 ```
 
-**All HTTP methods** for a matched path go to the child. The child receives the full request (method, headers, body) and handles it normally.
+The value is ignored — presence is the trigger. `curl -H 'infer-debug: 1' …`
+is the canonical manual form; a browser extension or an app-side middleware
+can set the same header for chosen requests.
+
+Two rules make this safe:
+
+1. **The header is consumed, never forwarded.** `proxyToChild` strips it before
+   proxying. The child inherits the parent's env, so it runs the same enabled
+   infer-debug module — a forwarded header would make the child try to proxy
+   to its own (nonexistent) grandchild and answer 503.
+2. **No auto-start on header.** A marked request while the child is down gets
+   503; lifecycle stays explicit via `POST <basePath>/start`.
+
+**The jump link.** Proxied responses carry the same header name back, with a
+DevTools deep link built by `buildDevtoolsJumpUrl` (`models/devtools-url.ts`):
+
+```
+infer-debug: devtools://devtools/bundled/js_app.html?experiments=true&v8only=true&ws=<request Host>/<inspectorTargetId>
+```
+
+`ws` points back at the *same host and port the client already reached* — the
+WS tunnel forwards any upgrade path to the child inspector, so the deep link
+works through ingress with no extra port exposure. `inspectorTargetId` is
+fetched once from the child's `127.0.0.1:9229/json/list` right after the
+health check passes (best-effort, never throws), cached on the service, and
+self-healed on the next proxied response if it was missed.
+
+**All HTTP methods** for a marked request go to the child. The child receives
+the full request (method, headers, body) minus the trigger header.
+
+Per-URL selection is now an app-side concern: set the header in your own
+middleware from any route table you like. `examples/nest-route-table/` shows
+the pattern (note the ordering caveat there: a root module's `configure()`
+runs before the imported `InferDebugModule`'s, so the marker middleware must
+be registered early).
 
 ---
 
@@ -271,7 +310,11 @@ Child Process (port APP_PORT+1)
 const proxyHeaders = headers ? { ...headers } : { ...req.headers };
 ```
 
-The main process forwards **all original request headers** to the child, with one modification: if the request has a parsed body (`req.body !== undefined`), the `content-length` header is removed and recalculated from the serialized body.
+The main process forwards **all original request headers** to the child, with two
+exceptions: the **trigger header is stripped** (it is consumed by the proxy —
+forwarding it would make the child chase a nonexistent grandchild, see "Trigger
+Header" above), and if the request has a parsed body (`req.body !== undefined`),
+the `content-length` header is removed and recalculated from the serialized body.
 
 **Why preserve all headers?**
 The child process is the same application — the request must look to it exactly as
@@ -283,10 +326,9 @@ forwarding everything, in particular:
 - `Content-Type`, `Accept` — content negotiation
 - whatever custom headers your own gateway/infrastructure injects
 
-A natural extension of this is **header-based routing control**: since the proxy
-sees every header before deciding, requests could be routed to the child based on
-header values (e.g. only your own test marker header), not just on the path. Not
-implemented — open an issue if that would help your workflow.
+This is also what makes the header trigger work at all: the proxy already sees
+every header before deciding, so routing on a header's presence is the same
+operation as routing on the path used to be — one check in the middleware.
 
 **Why not set `Host: 127.0.0.1:APP_PORT+1`?**  
 The `Host` header is preserved from the original request. The child process doesn't care about the `Host` header for its own routing (NestJS routes by path, not virtual host), so no rewrite is needed.
@@ -421,7 +463,7 @@ The `infer-debug` CLI (`bin/infer-debug.js`) is the laptop-side orchestration cl
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │ 1. ARGUMENT PARSING                                                  │
-│    - Extract host, local port, routes from CLI args                  │
+│    - Extract host, local port from CLI args                          │
 │    - Host is required (first arg or INFER_DEBUG_HOST env)            │
 │    - Scheme honored: http:// stays plain HTTP; bare remote → https   │
 │    - Default local port: 9229 (or INFER_DEBUG_PORT)                  │
@@ -479,16 +521,7 @@ The `infer-debug` CLI (`bin/infer-debug.js`) is the laptop-side orchestration cl
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ 7. ROUTE CONFIGURATION                                               │
-│    GET <basePath>/routes  → current routes                           │
-│    Merge with CLI-provided routes                                    │
-│    POST <basePath>/routes  → new merged list                         │
-│    → prints updated routes                                           │
-└─────────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ 8. LOCAL PROXY STARTUP                                               │
+│ 7. LOCAL PROXY STARTUP                                               │
 │    http.createServer() on local port (default 9229)                  │
 │    │                                                                 │
 │    ├─ HTTP requests → forwarded to remote host:443                   │
@@ -590,7 +623,7 @@ The `touchActivity(source)` method is called from:
 | Source | When |
 |--------|------|
 | `startChild` | Child process starts successfully |
-| `proxyToChild` | HTTP request matches a debug route |
+| `proxyToChild` | HTTP request carries the trigger header |
 | `proxyToInspector` | Inspector discovery request |
 | `handleUpgrade` | WebSocket upgrade initiates |
 | `wsDataFromInspector` | Data flows from inspector to client |
@@ -674,11 +707,19 @@ forever, and the CLI polling loop above fails fast on the settled `stopped`.
 
 **When to use the wrap proxy instead:** when you cannot or do not want to touch the app's module wiring at all — e.g. debugging an app you do not own the source of, or a non-NestJS Node.js service.
 
-### 2. Path-Only Route Matching (Not Method-Specific)
+### 2. Header Trigger, Not Path Matching
 
-**Why:** When you set a breakpoint in a controller method, you want ALL requests to that path to hit it — GET, POST, PUT, DELETE. The child handles methods normally. This is simpler and matches developer intuition.
+**Why:** When you set a breakpoint in a controller method, you want the request
+that reaches it to hit it — regardless of method or path shape. A header mark
+does exactly that and needs no registry, no template language, no control
+endpoints to keep in sync with the app's actual routing. Path-based selection
+is still possible — as an app-side middleware that sets the header from your
+own route table (`examples/nest-route-table/`) — but it is no longer the
+package's concern.
 
-**Open question:** method-specific matching (`GET /api/orders` proxied, `POST /api/orders` not) is doable but adds config surface. Worth discussion — open an issue if you need it.
+**Open question:** method- or value-specific triggering (e.g. only when the
+header equals a token) is doable app-side the same way. Worth discussion —
+open an issue if you need it in core.
 
 ### 3. Express Middleware Over NestJS Interceptor
 
@@ -759,17 +800,16 @@ curl -X POST https://host/infer-debug/start
 
 ### Breakpoints not hitting
 
-**Cause:** The route is not in the registry.
+**Cause:** The request lacks the trigger header.
 
 **Check:**
 ```bash
-curl https://host/infer-debug/routes
-# Should include your path
+# The request must carry the header (any value — presence is the trigger):
+curl -H 'infer-debug: 1' https://host/v1/your/endpoint
+# The response should come back with the same header holding a devtools:// jump link
 
-# Add it if missing:
-curl -X POST https://host/infer-debug/routes \
-  -H "Content-Type: text/plain" \
-  -d "/v1/your/endpoint"
+# If you use an app-side route table, verify it actually sets the header
+# for this path (see examples/nest-route-table/)
 ```
 
 ### Child logs not visible
@@ -795,14 +835,19 @@ If empty, the child may not have produced output yet, or the buffer was cleared 
 
 | File | Purpose |
 |------|---------|
-| `src/infer-debug.module.ts` | Dynamic module (`forRoot`/`forRootAsync`); self-registers the middleware |
-| `src/infer-debug.module-definition.ts` | `ConfigurableModuleBuilder` wiring, `INFER_DEBUG_OPTIONS` token |
-| `src/infer-debug.service.ts` | Core service: child spawn, port discovery, proxy logic, session detection |
-| `src/infer-debug.controller.ts` | REST API for control endpoints |
-| `src/infer-debug.middleware.ts` | The real proxy path (reads `originalUrl` — see change #3 above) |
+| `src/core/infer-debug-core.ts` | **Framework-free core** (`InferDebugCore`): child spawn, port discovery, proxy logic, WS tunnel, session detection, `handleHttp`/`shouldHandle` |
+| `src/core/control-api.ts` | Control endpoints as plain req/res routing (non-Nest adapters) |
+| `src/core/http-like.ts` | Structural req/res types + logger contract |
+| `src/infer-debug.module.ts` | NestJS dynamic module (`forRoot`/`forRootAsync`); self-registers the middleware |
+| `src/infer-debug.service.ts` | NestJS shell: DI + lifecycle hooks, extends `InferDebugCore` |
+| `src/infer-debug.controller.ts` | NestJS REST API for control endpoints (Swagger-visible twin of `control-api.ts`) |
+| `src/infer-debug.middleware.ts` | NestJS pre-routing interception (reads `originalUrl` — see change #3 above) |
+| `src/adapters/express/index.ts` | Express middleware factory over the core |
+| `src/adapters/fastify/index.ts` | Fastify plugin (skip-override marker, onReady/onClose hooks) |
+| `src/nestjs.ts`, `src/express.ts`, `src/fastify.ts` | Subpath entry barrels |
 | `src/infer-debug.options.ts` | `TInferDebugOptions`, defaults resolver, `resolveChildEntry()` |
-| `src/swagger.ts` | `setupInferDebugDocs()` + `stripInferDebugPaths()` |
+| `src/swagger.ts` | `setupInferDebugDocs()` + `stripInferDebugPaths()` (NestJS) |
 | `src/models/circular-buffer.ts` | Log buffer implementation |
-| `src/models/route-matcher.ts` | Route template matching (`{param}`, `/{*}`) |
+| `src/models/devtools-url.ts` | DevTools jump-link builder (`buildDevtoolsJumpUrl`) |
 | `bin/infer-debug.js` | Orchestration CLI (host required) |
-| `test/*.spec.ts` | Unit tests (buffer, matcher, options) |
+| `test/*.spec.ts` | Unit tests (buffer, options, middleware, proxy headers, devtools-url, service, core handleHttp, upgrade gate, express, fastify) |

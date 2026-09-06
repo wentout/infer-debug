@@ -78,7 +78,17 @@ export type TInferDebugOptions = {
   enabledEnvVar?: string;
 
   /**
-   * URL prefix of the control API (`/status`, `/start`, `/stop`, `/routes`,
+   * Name of the HTTP header that marks a request for the debug child.
+   * Any request carrying it is proxied to the child (when one is running);
+   * the proxied response carries the same header with a Chrome DevTools deep
+   * link that attaches to the child's inspector THROUGH the app's own port.
+   * The header is consumed by the proxy layer — it is NOT forwarded to the child.
+   * Default: 'infer-debug'.
+   */
+  headerName?: string;
+
+  /**
+   * URL prefix of the control API (`/status`, `/start`, `/stop`,
    * `/logs`, `/available` live under it).
    * Default: '/infer-debug'.
    */
@@ -94,12 +104,13 @@ export type TInferDebugOptions = {
 export type TResolvedInferDebugOptions = Required<
   Pick<
     TInferDebugOptions,
-    'enabled' | 'inspectorPort' | 'idleTimeoutMs' | 'idleCheckIntervalMs' | 'logBufferSize' | 'childEntry' | 'childPortEnvVar' | 'basePath'
+    'enabled' | 'inspectorPort' | 'idleTimeoutMs' | 'idleCheckIntervalMs' | 'logBufferSize' | 'childEntry' | 'childPortEnvVar' | 'basePath' | 'headerName'
   >
 > &
   Pick<TInferDebugOptions, 'childReadyStdoutPattern' | 'healthcheckPath' | 'childPort'>;
 
 export const DEFAULT_BASE_PATH = '/infer-debug';
+export const DEFAULT_HEADER_NAME = 'infer-debug';
 
 export function normalizeBasePath(basePath: string = DEFAULT_BASE_PATH): string {
   const withLeading = basePath.startsWith('/') ? basePath : `/${basePath}`;
@@ -116,6 +127,8 @@ export function resolveInferDebugOptions(options: TInferDebugOptions = {}): TRes
     childEntry: options.childEntry ?? process.argv[1],
     childPortEnvVar: options.childPortEnvVar ?? 'APP_PORT',
     basePath: normalizeBasePath(options.basePath),
+    // Node lowercases incoming header names — normalize so lookups never miss.
+    headerName: (options.headerName ?? DEFAULT_HEADER_NAME).toLowerCase(),
     childReadyStdoutPattern: options.childReadyStdoutPattern,
     healthcheckPath: options.healthcheckPath,
     childPort: options.childPort,

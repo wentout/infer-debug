@@ -14,7 +14,7 @@ const DEFAULT_PORT = Number(process.env.INFER_DEBUG_PORT) || 9229;
 let SECURE = true;
 let BASE_PATH = DEFAULT_BASE_PATH;
 
-const USAGE = `Usage: infer-debug <host> [localPort] [/route ...]
+const USAGE = `Usage: infer-debug <host> [localPort]
 
   host        Target host, or set INFER_DEBUG_HOST.
               - full URL (https://api.example.com)  → that scheme is honored
@@ -22,14 +22,21 @@ const USAGE = `Usage: infer-debug <host> [localPort] [/route ...]
               - self-signed certs are tolerated for https
   localPort   Local proxy port for chrome://inspect (default ${DEFAULT_PORT};
               or set INFER_DEBUG_PORT)
-  /route      Endpoint(s) to route into the debug child, e.g. '/api/orders/{id}'
   --base-path=/custom   Control API prefix if the server overrode it
                         (or set INFER_DEBUG_BASE_PATH; default /infer-debug)
 
+Route requests into the debug child by sending its trigger header
+('infer-debug' unless the server overrode the headerName option):
+
+  curl -H 'infer-debug: 1' https://api.example.com/api/orders/42
+
+Proxied responses carry the same header with a devtools:// deep link that
+attaches to the child straight through the app's own port.
+
 Examples:
-  infer-debug localhost:3000 '/api/orders/{id}'
-  infer-debug https://api.example.com 9229 '/api/orders/{*}'
-  infer-debug http://staging.internal:8080 '/your-debugged-url'`;
+  infer-debug localhost:3000
+  infer-debug https://api.example.com 9229
+  infer-debug http://staging.internal:8080`;
 
 // ==================== ARGUMENT PARSING ====================
 
@@ -46,7 +53,6 @@ function parseArgs(argv) {
   let secure = null;
   let localPort = null;
   let basePath = DEFAULT_BASE_PATH;
-  const routes = [];
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -67,27 +73,19 @@ function parseArgs(argv) {
       if (localPort === null) {
         localPort = Number(arg);
       } else {
-        failUsage(`'${arg}' doesn't look like a route — routes must start with '/'`);
+        failUsage(`Unexpected argument '${arg}'`);
       }
       continue;
     }
 
-    // Starts with / = route
-    if (arg.startsWith('/')) {
-      routes.push(arg);
-      continue;
-    }
-
-    // Otherwise = host URL (first) or route as a full URL (subsequent)
+    // Otherwise = host URL (first positional only)
     if (host === null) {
       const parsed = extractHost(arg);
       host = parsed.hostname;
       hostPort = parsed.port;
       secure = parsed.secure;
-    } else if (/^https?:\/\//.test(arg)) {
-      routes.push(extractRoute(arg));
     } else {
-      failUsage(`'${arg}' doesn't look like a route — routes must start with '/' (e.g. '/api/orders/{id}')`);
+      failUsage(`Unexpected argument '${arg}' — route selection moved to the 'infer-debug' request header (curl -H 'infer-debug: 1' <url>)`);
     }
   }
 
@@ -97,7 +95,6 @@ function parseArgs(argv) {
     secure,
     localPort: localPort || DEFAULT_PORT,
     basePath,
-    routes,
   };
 }
 
@@ -127,15 +124,6 @@ function extractHost(input) {
       port: portPart ? Number(portPart) : null,
       secure: null,
     };
-  }
-}
-
-function extractRoute(input) {
-  try {
-    const url = new URL(input);
-    return url.pathname;
-  } catch {
-    return input;
   }
 }
 
@@ -195,7 +183,7 @@ function resolveTargetPort(hostname, explicitPort) {
 }
 
 async function main() {
-  const { host, hostPort, secure, localPort, basePath, routes } = parseArgs(process.argv);
+  const { host, hostPort, secure, localPort, basePath } = parseArgs(process.argv);
 
   if (!host) {
     console.error(USAGE);
@@ -211,7 +199,6 @@ async function main() {
   console.log(`[InferDebug] Target: ${SECURE ? 'https' : 'http'}://${host}:${targetPort}`);
   console.log(`[InferDebug] Local port: ${localPort}`);
   console.log(`[InferDebug] Control API base path: ${BASE_PATH}`);
-  if (routes.length) console.log(`[InferDebug] Routes: ${routes.join(', ')}`);
 
   // 1. Pre-flight check
   console.log('[InferDebug] Checking debug-ability...');
@@ -251,12 +238,6 @@ async function main() {
   // 5. Post-start logs
   console.log('[InferDebug] --- Latest logs ---');
   await printEndpoint(host, targetPort, `${BASE_PATH}/logs?lines=3`, 'Logs');
-
-  // 5. Route configuration
-  if (routes.length > 0) {
-    console.log('[InferDebug] --- Configuring routes ---');
-    await configureRoutes(host, targetPort, routes);
-  }
 
   // 6. Start proxy
   console.log('[InferDebug] --- Starting local proxy ---');
@@ -314,18 +295,6 @@ async function startDebugSession(hostname, targetPort) {
   }
 
   throw new Error('Timeout waiting for debug session to start');
-}
-
-async function configureRoutes(hostname, targetPort, newRoutes) {
-  const { data: currentData } = await tryRequest(hostname, targetPort, `${BASE_PATH}/routes`);
-  const currentRoutes = currentData.trim().split('\n').filter((r) => r);
-  console.log(`[InferDebug] Current routes: ${currentRoutes.join(', ') || '(none)'}`);
-
-  const merged = [...new Set([...currentRoutes, ...newRoutes])];
-  const body = merged.join('\n');
-
-  const { data } = await tryRequest(hostname, targetPort, `${BASE_PATH}/routes`, 'POST', body);
-  console.log(`[InferDebug] Updated routes: ${data.trim().split('\n').join(', ')}`);
 }
 
 function sleep(ms) {
@@ -520,6 +489,7 @@ function startLocalProxy(targetHost, targetPort, sourcePort) {
     console.log(`[InferDebug] Forwarding to ${proto}://${targetHost}`);
     console.log(`[InferDebug] Configure chrome://inspect with 127.0.0.1:${sourcePort}`);
     console.log(`[InferDebug] Or: devtools://devtools/bundled/inspector.html?ws=127.0.0.1:${sourcePort}/debug`);
+    console.log(`[InferDebug] Route a request into the child with its trigger header: curl -H 'infer-debug: 1' <url>`);
   });
 }
 

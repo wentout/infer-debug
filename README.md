@@ -1,6 +1,8 @@
 # infer-debug
 
-In-process debug proxy for **NestJS (Express)** applications.
+In-process debug proxy for **Node.js** applications — framework-agnostic core
+with adapters for **NestJS**, **Express**, **Fastify**, or a plain
+`http.Server`.
 
 ## The story
 
@@ -33,7 +35,7 @@ port, so `chrome://inspect` just works — even through an SSH hop or an ingress
 ## How it works
 
 ```
-Client ──► Main NestJS app (port N) ──► matched routes proxied ──► Child app (port N+1, --inspect)
+Client ──► Main app (port N) ──► header-marked requests proxied ──► Child app (port N+1, --inspect)
                 │                                                              ▲
                 └── <basePath>/* control API, /json/* inspector discovery ─────┘
                 └── WebSocket tunnel to the child's Node inspector ◄── chrome://inspect
@@ -41,11 +43,20 @@ Client ──► Main NestJS app (port N) ──► matched routes proxied ─�
 
 - The child is spawned on demand (`POST <basePath>/start`) from the same entry file
   the host was launched with, with identical env except the HTTP port.
-- You register which routes go to the child using swagger-style templates:
-  `/api/orders/{id}`, `/api/orders/{*}` (subtree wildcard).
+- You choose which requests go to the child by sending its trigger header
+  (default: `infer-debug`) — any request carrying it is proxied. Proxied
+  responses carry the same header with a DevTools deep link that jumps straight
+  to the child's inspector. Route tables stay an app-side concern — see
+  [`examples/nest-route-table`](examples/nest-route-table).
 - Auto-stop after 3 minutes idle, with zombie detection (a child that refuses
   SIGTERM blocks new sessions until cleaned up).
 - Deep architecture notes: [`infer-debug-architecture.md`](infer-debug-architecture.md).
+
+> **Security note (honest one).** The trigger header is *marking*, not
+> authentication — anyone who can reach the app port can send it, and the
+> inspector UUID in the WS path is unguessability, not a boundary. Treat the
+> app port as the trust surface: keep the debug child internal, let your
+> ingress/VPN do the guarding, and rely on auto-stop to keep sessions short.
 
 ## Install
 
@@ -55,14 +66,21 @@ npm install infer-debug        # once published
 npm install file:../infer-debug
 ```
 
-Peer dependencies: `@nestjs/common`, `@nestjs/core`, `@nestjs/swagger`,
-`@nestjs/platform-express` (all ^11), `express`.
+Peer dependencies are **all optional** — install only the ones for the adapter
+you use: `@nestjs/common`/`@nestjs/core`/`@nestjs/swagger`/
+`@nestjs/platform-express` (all ^11) for NestJS, `express` (^4/^5) for Express,
+`fastify` (^4/^5) for Fastify, nothing at all for raw Node.
 
-## Quickstart
+> **Migrating from 0.2.x:** the root entry is now the framework-free core. The
+> NestJS wiring moved to a subpath — change
+> `import { InferDebugModule } from 'infer-debug'` to
+> `import { InferDebugModule } from 'infer-debug/nestjs'`. Nothing else changes.
+
+## Quickstart (NestJS)
 
 ```typescript
 // app.module.ts
-import { InferDebugModule } from 'infer-debug';
+import { InferDebugModule } from 'infer-debug/nestjs';
 
 @Module({
   imports: [InferDebugModule.forRoot()],
@@ -72,7 +90,7 @@ export class AppModule {}
 
 ```typescript
 // main.ts (optional but recommended)
-import { setupInferDebugDocs, stripInferDebugPaths } from 'infer-debug';
+import { setupInferDebugDocs, stripInferDebugPaths } from 'infer-debug/nestjs';
 
 const factory = (): OpenAPIObject =>
   stripInferDebugPaths(SwaggerModule.createDocument(app, config)); // keep main /docs clean
@@ -84,14 +102,59 @@ setupInferDebugDocs(app); // own UI at /infer-debug/docs, JSON at /infer-debug/d
 Start the app with `INFER_DEBUG=true` in the environment, then from your laptop:
 
 ```bash
-npx infer-debug https://api.example.com 9229 '/your-debugged-url'
+npx infer-debug https://api.example.com 9229
 ```
 
-That single command: asks the server to spawn the debug child, registers
-`/your-debugged-url` for proxying, and opens a local WebSocket bridge on
-`127.0.0.1:9229`. Point `chrome://inspect` at `127.0.0.1:9229`, call
-`/your-debugged-url` — your breakpoint fires **in the child**, while the main
-process keeps serving everyone else.
+That single command: asks the server to spawn the debug child and opens a local
+WebSocket bridge on `127.0.0.1:9229`. Then call any endpoint with the trigger
+header — it is served **by the child**:
+
+```bash
+curl -H 'infer-debug: 1' https://api.example.com/your-debugged-url
+```
+
+The response carries an `infer-debug` header with a `devtools://` deep link —
+paste it into Chrome and you're attached to the child, through the app's own
+port. Point `chrome://inspect` at `127.0.0.1:9229` as the alternative — either
+way your breakpoint fires **in the child**, while the main process keeps
+serving everyone else.
+
+## Quickstart (Express)
+
+```javascript
+const { InferDebugCore } = require('infer-debug');
+const { createInferDebugMiddleware } = require('infer-debug/express');
+
+const core = new InferDebugCore({ childPortEnvVar: 'PORT' });
+app.use(createInferDebugMiddleware(core));           // before your routes
+const server = app.listen(3000, () => core.attachServer(server));
+// on shutdown: core.close();
+```
+
+## Quickstart (Fastify)
+
+```javascript
+const { inferDebugFastifyPlugin } = require('infer-debug/fastify');
+
+fastify.register(inferDebugFastifyPlugin, { childPortEnvVar: 'PORT' });
+// routes first, then await fastify.ready() — the WS tunnel + port discovery
+// attach in the onReady hook, the child stops in onClose.
+// The core is reachable as fastify.inferDebug for programmatic control.
+```
+
+## Quickstart (raw Node)
+
+```javascript
+const { InferDebugCore } = require('infer-debug');
+const core = new InferDebugCore({ childPortEnvVar: 'APP_PORT' });
+const server = http.createServer((req, res) => {
+  if (core.handleHttp(req, res)) return;  // control API, /json/*, marked
+  // ... your app ...
+});
+server.listen(3000, () => core.attachServer(server));
+```
+
+Full runnable version: [`examples/raw-node`](examples/raw-node).
 
 ## Enabling / disabling
 
@@ -106,13 +169,18 @@ InferDebugModule.forRoot({ enabledEnvVar: 'MY_DEBUG_FLAG' });   // your own env 
 The env var is only a convention — feel free to ignore it and feed `enabled` from
 your own config system (`forRootAsync` works too).
 
-## Options (`forRoot` / `forRootAsync`)
+## Options
+
+Same `TInferDebugOptions` object everywhere: the NestJS `forRoot` /
+`forRootAsync`, the Fastify plugin's register options, or the
+`new InferDebugCore(options)` constructor for Express / raw Node.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `enabled` | env `INFER_DEBUG === 'true'` | Master switch. When false: no proxying, no upgrade hook, control endpoints report `disabled`. |
 | `enabledEnvVar` | `'INFER_DEBUG'` | Name of the env var consulted for the `enabled` default. |
 | `basePath` | `'/infer-debug'` | URL prefix of the control API (see below). |
+| `headerName` | `'infer-debug'` | Trigger header: requests carrying it go to the child; proxied responses carry it back with a DevTools deep link to the child's inspector. Normalized to lowercase. |
 | `inspectorPort` | `9229` | Node inspector port of the child (loopback only). |
 | `childPort` | auto | Exact HTTP port for the child. Default: the app's bound port + 1, discovered from the server's `listening` event. |
 | `childEntry` | `process.argv[1]` | Entry file spawned as the child — see "Using a different entrypoint". |
@@ -129,7 +197,7 @@ fixed at module-declaration time); the rest can come from your `useFactory`.
 ### Using a different entrypoint
 
 ```typescript
-import { InferDebugModule, resolveChildEntry } from 'infer-debug';
+import { InferDebugModule, resolveChildEntry } from 'infer-debug/nestjs';
 
 InferDebugModule.forRoot({
   childEntry: resolveChildEntry('dist/worker/main.js'), // resolved against process.cwd()
@@ -145,7 +213,6 @@ All endpoints live under `basePath` (default `/infer-debug`):
 | `GET <basePath>/available` | `{status: 'ok'}` or `{status: 'no', reason}` (`disabled` / `zombie present` / `debugger attached`) |
 | `GET <basePath>/status` | e.g. `running: no zombie: debugger detached` |
 | `POST <basePath>/start` / `POST <basePath>/stop` | Child lifecycle |
-| `GET/POST/DELETE <basePath>/routes` | Route registry (POST body: `text/plain`, one template per line) |
 | `GET <basePath>/logs?lines=N` / `DELETE <basePath>/logs` | Child stdout/stderr buffer |
 
 ### Why `/json/list` and `/json/version` also appear
@@ -168,22 +235,30 @@ command runs the whole session flow:
    status flips back to `stopped` (child died during start) or reports
    `has zombie` / `error`, instead of burning the full 2-minute timeout
 3. print inspector info (`/json/version`, `/json/list`) and recent child logs
-4. merge your routes into the registry (`POST <basePath>/routes`)
-5. open a local HTTP/WS proxy on `127.0.0.1:<localPort>` — the address you paste into `chrome://inspect`
+4. open a local HTTP/WS proxy on `127.0.0.1:<localPort>` — the address you paste into `chrome://inspect`
 
 ```
-infer-debug <host> [localPort] [/route ...]
+infer-debug <host> [localPort]
 
-  infer-debug localhost:3000 '/api/orders/{id}'
-  infer-debug https://api.example.com 9229 '/your-debugged-url'
-  infer-debug http://staging.internal:8080 '/api/orders/{*}'
+  infer-debug localhost:3000
+  infer-debug https://api.example.com 9229
+  infer-debug http://staging.internal:8080
 ```
+
+Once the child is running, route requests into it with the trigger header —
+from curl, from your gateway, or from an app-side route table
+([`examples/nest-route-table`](examples/nest-route-table)):
+
+```bash
+curl -H 'infer-debug: 1' https://api.example.com/api/orders/42
+```
+
+The proxied response answers with the same header holding a `devtools://` deep
+link (`ws=<app-host>/<inspector-target>` — the inspector WS is tunnelled at the
+same path on the app port), so the jump to the secondary debuggable process is
+one paste away, no CLI bridge strictly required for attaching.
 
 - `infer-debug --help` (or `-h`, or no arguments) prints the full usage and exits.
-- Every positional after the host must be a **route starting with `/`** (or a full
-  `http(s)://` URL to take the path from). Anything else — and any unknown
-  `--option` — fails loudly with the usage text instead of being silently
-  misread as a route.
 - Host may also come from `INFER_DEBUG_HOST`.
 - Local proxy port may also come from `INFER_DEBUG_PORT` (default 9229). If the
   port is already taken, the CLI exits with a clear `EADDRINUSE` message instead
@@ -243,8 +318,11 @@ npx infer-debug-wrap dist/src/main.js 3000
 
 ## Design notes worth a discussion
 
-- **Path-only route matching** — all HTTP methods of a matched path go to the child.
-  Method-specific matching is possible; open an issue if you need it.
+- **Header-triggered proxying** — any request carrying the trigger header goes to
+  the child, all methods alike; the header is consumed by the proxy and never
+  forwarded (the child runs the same module — forwarding would chase a
+  grandchild that doesn't exist). Route tables are deliberately the app's
+  concern, not the module's (see `examples/nest-route-table`).
 - **Express only** — Fastify adapter is not implemented yet; open an issue and we'll add it.
 - **127.0.0.1 over localhost** for the inspector — Chrome DevTools CSP treats the IP
   form more reliably. Make as many hops as needed, they all stay on loopback. :)
@@ -278,7 +356,8 @@ The package ships a self-contained end-to-end setup under `e2e/`: a tiny fixture
 NestJS app (`GET /api/orders/:id` reports `process.pid`; `POST /api/faults/*`
 deliberately triggers `uncaughtException` / `unhandledRejection` outside the
 request context) and a jest suite that proves the whole chain on a live app —
-route proxying (the answering pid changes), non-proxied routes staying on the
+header-marked proxying (the answering pid changes, and the response carries the
+DevTools jump link back), unmarked requests staying on the
 main process, DevTools discovery via `/json/list`, a real CDP session through
 the app port (breakpoint in the orders controller, live variable inspection,
 resume), and process-level fault logs whose stacks point at the **TypeScript
@@ -307,11 +386,13 @@ Want to show someone how it feels, end to end?
 INFER_DEBUG=true node e2e/dist/main.js        # after: npm run build && npm run build:e2e
 
 # 2. terminal 2 — your laptop side
-npx infer-debug 127.0.0.1:4123 '/api/orders/{*}' '/api/faults/{*}'
+npx infer-debug 127.0.0.1:4123
 
 # 3. Chrome → chrome://inspect → inspect 127.0.0.1:9229
-# 4. Set a breakpoint in faults.controller.ts → detonateUncaught, then:
-curl -X POST http://127.0.0.1:4123/api/faults/uncaught
+# 4. Set a breakpoint in faults.controller.ts → detonateUncaught, then send the
+#    trigger header so the request lands in the child:
+curl -X POST -H 'infer-debug: 1' http://127.0.0.1:4123/api/faults/uncaught -i
+#    (-i shows the answer's own infer-debug header: a devtools:// jump link)
 
 # 5. The child pauses at the throw, in the .ts source. Resume, then read the
 #    captured process-level fault with its TypeScript tracepath:
