@@ -1,15 +1,21 @@
 {
   "name": "infer-debug",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Framework-agnostic in-process debug proxy: attach Chrome DevTools to header-marked requests of a running Node.js app via a spawned debug child. Adapters for NestJS, Express, Fastify, or plain http.Server.",
   "license": "MIT",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "typesVersions": {
     "*": {
-      "nestjs": ["./dist/nestjs.d.ts"],
-      "express": ["./dist/express.d.ts"],
-      "fastify": ["./dist/fastify.d.ts"]
+      "nestjs": [
+        "./dist/nestjs.d.ts"
+      ],
+      "express": [
+        "./dist/express.d.ts"
+      ],
+      "fastify": [
+        "./dist/fastify.d.ts"
+      ]
     }
   },
   "exports": {
@@ -108,9 +114,9 @@
     }
   },
   "devDependencies": {
-    "@nestjs/common": "^11.2.1",
-    "@nestjs/core": "^11.2.1",
-    "@nestjs/platform-express": "^11.2.1",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-express": "^11.2.3",
     "@nestjs/swagger": "^11.4.7",
     "@types/express": "^4.17.25",
     "@types/jest": "^29.5.14",

@@ -323,7 +323,6 @@ npx infer-debug-wrap dist/src/main.js 3000
   forwarded (the child runs the same module — forwarding would chase a
   grandchild that doesn't exist). Route tables are deliberately the app's
   concern, not the module's (see `examples/nest-route-table`).
-- **Express only** — Fastify adapter is not implemented yet; open an issue and we'll add it.
 - **127.0.0.1 over localhost** for the inspector — Chrome DevTools CSP treats the IP
   form more reliably. Make as many hops as needed, they all stay on loopback. :)
 
