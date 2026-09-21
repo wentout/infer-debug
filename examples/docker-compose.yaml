@@ -1,0 +1,36 @@
+# One container per adapter example: same package, same scenario, three
+# frameworks. Each publishes only its main HTTP port — the debug child
+# (port+1) and the Node inspector (9229) stay on loopback inside the
+# container, so all debugger traffic tunnels through the app port, which is
+# exactly what the package exists for.
+#
+#   docker compose -f examples/docker-compose.yaml up --build
+# or simply: npm run compose:examples
+#
+# Then, from your laptop (the shipped CLI drives the whole session):
+#   node bin/infer-debug.js http://localhost:3001   # express
+#   node bin/infer-debug.js http://localhost:3002   # fastify
+#   node bin/infer-debug.js http://localhost:3003   # nestjs
+# and route a request into the child:
+#   curl -H 'infer-debug: 1' localhost:3001/api/orders/42
+services:
+  express:
+    build:
+      context: ..
+      dockerfile: examples/express/Dockerfile
+    ports:
+      - '3001:3001'
+
+  fastify:
+    build:
+      context: ..
+      dockerfile: examples/fastify/Dockerfile
+    ports:
+      - '3002:3002'
+
+  nestjs:
+    build:
+      context: ..
+      dockerfile: examples/nestjs/Dockerfile
+    ports:
+      - '3003:3003'

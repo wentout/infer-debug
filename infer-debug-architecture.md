@@ -1,16 +1,25 @@
 # Debug Proxy Architecture
 
-> Deep technical reference for the `infer-debug` NestJS package.
+> Deep technical reference for the `infer-debug` package — a framework-free
+> core usable from any Node.js app, with bundled adapters for NestJS, Express,
+> and Fastify.
 > For usage documentation, see [`README.md`](README.md).
 
 ---
 
 ## Current State (v0.3.0)
 
-1. **Self-attach, no host wiring.** The module implements `NestModule.configure()`
-   and applies `InferDebugMiddleware.forRoutes('*')` itself; the WS upgrade hook is
-   attached in `onApplicationBootstrap` via `HttpAdapterHost`. Integration = one
-   `InferDebugModule.forRoot()` import.
+1. **Framework-free core, self-attaching adapters.** `src/core/`
+   (`InferDebugCore`, control API, options, models) imports no framework and is
+   usable directly on any `http.Server` (`handleHttp` + `attachServer`). The
+   bundled adapters are thin shells that wire the core into framework
+   lifecycles: the NestJS module applies `InferDebugMiddleware.forRoutes('*')`
+   itself via `NestModule.configure()` and attaches the WS upgrade hook in
+   `onApplicationBootstrap` via `HttpAdapterHost` (integration = one
+   `InferDebugModule.forRoot()` import); the Express adapter is a middleware
+   factory; the Fastify plugin hooks `onRequest`/`onReady`/`onClose`. Root
+   entry = core only; adapters are subpath exports (`infer-debug/nestjs`,
+   `/express`, `/fastify`).
 2. **Port auto-discovery.** The app port is read from the HTTP server's `listening`
    event (`server.address().port`); the child gets `appPort + 1`, unless pinned
    exactly via the `childPort` option.
@@ -24,32 +33,26 @@
    WebSockets) are left to other listeners in all states. The path check is
    routing, not security: the tunnel exists so the host's own sockets survive
    a debug session, not to authenticate anyone.
-10. **Trigger header, no route registry.** Requests carrying the `infer-debug`
-    header (name configurable via `headerName`) are proxied to the child; the
-    header is consumed, never forwarded, and proxied responses carry it back
-    with a DevTools deep link to the child's inspector. Per-URL selection is
-    app-side (`examples/nest-route-table/`).
-11. **Framework-free core, adapter shells.** `src/core/` (`InferDebugCore`,
-    control API, options, models) imports no framework. The NestJS module /
-    controller / middleware, the Express middleware factory, and the Fastify
-    plugin are thin shells around it; raw Node uses the core directly
-    (`handleHttp` + `attachServer`). Root entry = core only; adapters are
-    subpath exports (`infer-debug/nestjs`, `/express`, `/fastify`).
-5. **Child readiness probes are options.** `healthcheckPath` (e.g. `/healthcheck`)
+5. **Trigger header, no route registry.** Requests carrying the `infer-debug`
+   header (name configurable via `headerName`) are proxied to the child; the
+   header is consumed, never forwarded, and proxied responses carry it back
+   with a DevTools deep link to the child's inspector. Per-URL selection is
+   app-side (`examples/nest-route-table/`).
+6. **Child readiness probes are options.** `healthcheckPath` (e.g. `/healthcheck`)
    and `childReadyStdoutPattern` (e.g. `/Server listening on port/i`); default is a
-   plain TCP connect probe — works for any NestJS app.
-6. **Entrypoint is an option.** Default `process.argv[1]` (whatever the host was
+   plain TCP connect probe — works for any Node.js HTTP app.
+7. **Entrypoint is an option.** Default `process.argv[1]` (whatever the host was
    launched with); `childEntry` + `resolveChildEntry()` for alternate entrypoints.
-7. **Control API under a configurable `basePath`** (default `/infer-debug`):
+8. **Control API under a configurable `basePath`** (default `/infer-debug`):
    `available`, `status`, `start`, `stop`, `logs`. The availability
    endpoint is `<basePath>/available`.
-8. **Swagger via helpers.** `setupInferDebugDocs(app)` mounts a debug-only UI at
+9. **Swagger via helpers.** `setupInferDebugDocs(app)` mounts a debug-only UI at
    `/infer-debug/docs`; `stripInferDebugPaths(document)` keeps the app's main docs
    clean.
-9. **Module options** via `forRoot`/`forRootAsync`, token `INFER_DEBUG_OPTIONS`,
-   resolved with defaults by `resolveInferDebugOptions()`. The controller is built
-   by a factory (`createInferDebugController`) because NestJS route decorators are
-   static and must know `basePath` at module-declaration time.
+10. **Module options** via `forRoot`/`forRootAsync`, token `INFER_DEBUG_OPTIONS`,
+    resolved with defaults by `resolveInferDebugOptions()`. The controller is built
+    by a factory (`createInferDebugController`) because NestJS route decorators are
+    static and must know `basePath` at module-declaration time.
 
 ---
 
@@ -71,7 +74,7 @@
 
 ## Overview
 
-The debug proxy is an **in-process debugging system** that allows a developer to attach Chrome DevTools to individually header-marked HTTP requests in a running NestJS application. It solves the problem of debugging production-like environments (Kubernetes pods, dev servers) without disrupting normal traffic or duplicating telemetry.
+The debug proxy is an **in-process debugging system** that allows a developer to attach Chrome DevTools to individually header-marked HTTP requests in a running Node.js application — NestJS, Express, Fastify, or a plain `http.Server`. It solves the problem of debugging production-like environments (Kubernetes pods, dev servers) without disrupting normal traffic or duplicating telemetry.
 
 ### Why Not Just `--inspect` on the Main Process?
 
@@ -92,8 +95,8 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 │  Chrome DevTools ──► ws://127.0.0.1:9229/debug                              │
 │                           │                                                 │
 │                    ┌──────┴──────┐                                          │
-│                    │  bin/proxy  │  (Node.js HTTP/WS proxy)                 │
-│                    │   (local)   │                                          │
+│                    │ infer-debug │  (Node.js HTTP/WS proxy)                 │
+│                    │    (CLI)    │                                          │
 │                    └──────┬──────┘                                          │
 │                           │ HTTPS                                           │
 └───────────────────────────┼─────────────────────────────────────────────────┘
@@ -108,20 +111,22 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 │                           │                                                 │
 │     ┌─────────────────────┴─────────────────────┐                          │
 │     │              MAIN PROCESS                  │                          │
-│     │           (NestJS, port 80)                │                          │
+│     │     (any Node.js HTTP app, port 80)        │                          │
 │     │                                            │                          │
 │     │  ┌─────────────────────────────────────┐   │                          │
-│     │  │  Express Middleware (NestModule)     │   │                          │
+│     │  │  InferDebugCore                      │   │                          │
+│     │  │  (via NestJS / Express / Fastify      │   │                          │
+│     │  │   adapter, or handleHttp directly)   │   │                          │
 │     │  │                                     │   │                          │
-│     │  │  /infer-debug/*  → next()           │   │  (control endpoints)     │
+│     │  │  /infer-debug/*  → control API      │   │  (start/stop/status/logs)│
 │     │  │  /json/list      → proxyToInspector │   │  (inspector discovery)   │
 │     │  │  /json/version   → proxyToInspector │   │                          │
 │     │  │  header-marked    → proxyToChild     │   │  (debug traffic)         │
-│     │  │  everything else → next()           │   │  (normal traffic)        │
+│     │  │  everything else → pass to the app  │   │  (normal traffic)        │
 │     │  └─────────────────────────────────────┘   │                          │
 │     │                                            │                          │
 │     │  ┌─────────────────────────────────────┐   │                          │
-│     │  │  InferDebugService                  │   │                          │
+│     │  │  InferDebugCore state               │   │                          │
 │     │  │  ├─ child: ChildProcess             │   │                          │
 │     │  │  ├─ inspectorPort: 9229             │   │                          │
 │     │  │  ├─ childPort: APP_PORT + 1         │   │                          │
@@ -135,7 +140,7 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 │                           │                                                 │
 │     ┌─────────────────────┴─────────────────────┐                          │
 │     │              CHILD PROCESS                 │                          │
-│     │         (NestJS, port APP_PORT+1)          │                          │
+│     │      (same app, port APP_PORT+1)           │                          │
 │     │                                            │                          │
 │     │  Same code, same env, same DB              │                          │
 │     │  --inspect=9229 (internal only)            │                          │
@@ -155,8 +160,8 @@ The in-process proxy isolates debug traffic to a **child process** while the mai
 
 ### Port 1: `APP_PORT` (Public — 80 in k8s, 3000+ locally)
 
-**Process:** Main NestJS app  
-**Listeners:** Express HTTP server  
+**Process:** Main app  
+**Listeners:** The app's HTTP server (NestJS, Express, Fastify, or raw `http.Server`)  
 **Purpose:** All public traffic. Health checks, swagger, API calls, debug control endpoints.
 
 In Kubernetes, this is the container port exposed by the Service. The Ingress routes external traffic here.
@@ -164,7 +169,7 @@ In Kubernetes, this is the container port exposed by the Service. The Ingress ro
 ### Port 2: `APP_PORT + 1` (Internal — child app)
 
 **Process:** Debug child (spawned on demand)  
-**Listeners:** Express HTTP server (identical to main)  
+**Listeners:** The app's HTTP server (a second copy of the main process)  
 **Purpose:** Receives only the HTTP requests that carry the trigger header.
 
 The child is spawned with `env: { APP_PORT: String(appPort + 1) }`, so it binds to the next port. The main process proxies header-marked requests here via `http.request()` to `127.0.0.1:APP_PORT+1`.
@@ -331,7 +336,7 @@ every header before deciding, so routing on a header's presence is the same
 operation as routing on the path used to be — one check in the middleware.
 
 **Why not set `Host: 127.0.0.1:APP_PORT+1`?**  
-The `Host` header is preserved from the original request. The child process doesn't care about the `Host` header for its own routing (NestJS routes by path, not virtual host), so no rewrite is needed.
+The `Host` header is preserved from the original request. The child process doesn't care about the `Host` header for its own routing (HTTP frameworks route by path, not virtual host), so no rewrite is needed.
 
 ### Inspector Discovery Headers
 
@@ -697,7 +702,7 @@ forever, and the CLI polling loop above fails fast on the settled `stopped`.
 
 ### 1. Main Process Front-Facing (Not Wrap Proxy)
 
-**Alternative shipped:** `bin/infer-debug-wrap.js` is included in the package — a standalone Node.js script that spawns the app and proxies everything, no NestJS integration needed.
+**Alternative shipped:** `bin/infer-debug-wrap.js` is included in the package — a standalone Node.js script that spawns the app and proxies everything, no wiring into the app's code needed.
 
 **Why in-process is the default:**
 - OpenTelemetry headers are injected by the Ingress/envoy layer **before** the request reaches the app
@@ -705,7 +710,7 @@ forever, and the CLI polling loop above fails fast on the settled `stopped`.
 - The in-process approach preserves all incoming headers naturally
 - No separate entry point (your normal bootstrap handles both modes)
 
-**When to use the wrap proxy instead:** when you cannot or do not want to touch the app's module wiring at all — e.g. debugging an app you do not own the source of, or a non-NestJS Node.js service.
+**When to use the wrap proxy instead:** when you cannot or do not want to touch the app's code at all — e.g. debugging an app you do not own the source of.
 
 ### 2. Header Trigger, Not Path Matching
 
@@ -721,21 +726,39 @@ package's concern.
 header equals a token) is doable app-side the same way. Worth discussion —
 open an issue if you need it in core.
 
-### 3. Express Middleware Over NestJS Interceptor
+### 3. Pre-Routing Interception (Middleware, Not Interceptors)
 
-**Why:** Interceptors run after NestJS routing. We need to intercept requests **before** routing to decide whether to proxy. Express middleware runs at the framework level, before any controllers.
+**Why:** Framework niceties like NestJS interceptors run **after** routing. The proxy decision must happen **before** routing, so every adapter intercepts at the framework's earliest request stage: Express-style middleware for the NestJS module, an `onRequest` hook + `reply.hijack()` for Fastify, a plain middleware function for Express, and a first-refusal `handleHttp` call for raw Node.
 
-**Limitation:** only the Express adapter is supported today; there is no Fastify adapter yet. If you run Fastify, open an issue — the proxy logic itself is adapter-agnostic and a Fastify hook equivalent is feasible.
+### 4. The Adapter Contract (Custom Adapters Are First-Class)
 
-### 4. `127.0.0.1` Over `localhost` for Inspector
+**Why:** the shipped NestJS / Express / Fastify adapters are reference
+implementations, not the boundary. All behavior lives in `InferDebugCore`;
+an adapter for any other framework (Koa, Hono, a custom router) only has to:
+
+1. construct `new InferDebugCore(options, logger?)`;
+2. give the core first refusal at the framework's earliest pre-routing stage —
+   `if (core.handleHttp(req, res)) return;`, with `core.shouldHandle(req)` as
+   the pre-check when the framework must commit to manual response handling
+   before answering (Fastify's `hijack` pattern);
+3. call `core.attachServer(httpServer)` once the server exists (port
+   discovery + inspector WS upgrade hook — server-level, framework-agnostic);
+4. call `core.close()` on shutdown.
+
+Caveats: match on `req.originalUrl ?? req.url` (framework mounts may rewrite
+`req.url`); pass raw Node req/res, not framework wrappers; leave a parsed
+`req.body` in place so the proxy can re-send it with a recalculated
+`Content-Length`.
+
+### 5. `127.0.0.1` Over `localhost` for Inspector
 
 **Why:** Chrome DevTools CSP (Content Security Policy) allows `ws://127.0.0.1:*` but may block `ws://localhost:*` in some configurations. Using the IP address is more reliable. Feel free to make as many hops as needed — the tunnel does not care about the final hostname.
 
-### 5. Log Buffer for Session Detection
+### 6. Log Buffer for Session Detection
 
 **Why:** Instead of maintaining connection state manually (which gets complex with reconnections, dropped connections, etc.), we parse logs. Logs are already collected for display, so this adds zero overhead.
 
-### 6. Single Shared Environment
+### 7. Single Shared Environment
 
 **Why:** The child process uses `env: { ...process.env, APP_PORT: String(this.childPort) }`. This means:
 - Same database credentials
@@ -745,11 +768,11 @@ open an issue if you need it in core.
 
 No environment drift between main and child.
 
-### 7. Auto-Stop Instead of Manual Cleanup
+### 8. Auto-Stop Instead of Manual Cleanup
 
 **Why:** Developers forget to stop debug sessions. An idle child consumes ~50% extra memory. Auto-stop (3 min) with clear logging ensures resources are freed. The check interval (10s) is frequent enough to catch idle sessions quickly but not so frequent that it generates noise.
 
-### 8. `INFER_DEBUG` Environment Variable
+### 9. `INFER_DEBUG` Environment Variable
 
 **Why:** A single env var controls the entire feature:
 - `true` → middleware registered, child can be spawned, endpoints available

@@ -7,7 +7,7 @@
 
 `infer-debug` — a standalone, MIT-licensed Node.js package. Framework-free
 in-process debug proxy core (`src/core/`, zero framework imports) with thin
-adapters: NestJS module (the original wiring), Express middleware, Fastify
+adapters shipped alongside: NestJS module, Express middleware, Fastify
 plugin, or direct use on a raw `http.Server`. Requests carrying the trigger
 header (default `infer-debug`) are forwarded to a spawned child copy of the app
 running with the Node inspector enabled, so Chrome DevTools can attach to a
@@ -52,6 +52,12 @@ examples/
   nest-route-table/         app-side route table: sets the trigger header per
                             URL template (routes were removed from core)
   raw-node/                 framework-free usage: handleHttp + attachServer
+  express/                  runnable adapter example (server.js + Dockerfile)
+  fastify/                  runnable adapter example (server.js + Dockerfile)
+  nestjs/                   runnable adapter example (TS, own tsconfig with
+                            node16 resolution so 'infer-debug/nestjs' resolves)
+  docker-compose.yaml       one container per adapter example (npm run
+                            compose:examples); build context = package root
 test/                       jest unit tests (ts-jest)
 e2e/                        self-contained e2e: fixture app, CDP spec, Dockerfile,
                             docker-compose.yaml (see "E2E & Docker" in README)
@@ -63,6 +69,8 @@ dist/                       build output (gitignored)
 ```bash
 npm run build   # tsc -p tsconfig.build.json — must pass before declaring done
 npm test        # jest — must stay green
+npm run build:examples    # compiles examples/nestjs (JS examples need no build)
+npm run compose:examples  # one docker container per adapter example
 ```
 
 ## Non-obvious invariants (do not break these)
@@ -107,7 +115,9 @@ npm test        # jest — must stay green
    to the core; adapters only translate framework lifecycle/routing into core
    calls. The WS upgrade gate is the uuid-shaped inspector path
    (`isInspectorUpgradePath`), never the trigger header — DevTools cannot send
-   custom headers on its handshake.
+   custom headers on its handshake. Custom adapters are first-class: the
+   contract is constructor → first-refusal `handleHttp`/`shouldHandle`
+   pre-routing → `attachServer` → `close` (README "Writing your own adapter").
 
 ## Linked (`file:`) development
 
@@ -125,6 +135,12 @@ npm creates a symlink. Two consequences:
 
 - `README.md` — usage (users). Generic examples only.
 - `infer-debug-architecture.md` — deep architecture, "Current State" phrasing only.
+- `SKILL.md` — the agent-operator channel (ships in the npm package). Its
+  "AI agents: drive the session yourself" section teaches agents the
+  consent rule (ask before starting a child session unless yolo/auto mode)
+  and the no-Chrome CDP flow through the app port. Keep that section
+  accurate when the control API or WS tunnel changes — it is what other
+  agent sessions act on.
 - This file — development invariants.
 - Update all three when behavior changes.
 

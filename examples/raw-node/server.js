@@ -38,5 +38,11 @@ server.listen(port, () => {
   console.log(`listening on :${port} (pid ${process.pid})`);
 });
 
-process.on('SIGTERM', () => core.close());
-process.on('SIGINT', () => core.close());
+// exit() matters: the debug child runs this same file — a SIGTERM handler
+// that only closes the core would keep the child alive forever (zombie).
+const shutdown = () => {
+  core.close();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

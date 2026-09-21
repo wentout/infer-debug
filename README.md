@@ -119,6 +119,8 @@ port. Point `chrome://inspect` at `127.0.0.1:9229` as the alternative — either
 way your breakpoint fires **in the child**, while the main process keeps
 serving everyone else.
 
+Full runnable version: [`examples/nestjs`](examples/nestjs).
+
 ## Quickstart (Express)
 
 ```javascript
@@ -131,6 +133,8 @@ const server = app.listen(3000, () => core.attachServer(server));
 // on shutdown: core.close();
 ```
 
+Full runnable version: [`examples/express`](examples/express).
+
 ## Quickstart (Fastify)
 
 ```javascript
@@ -141,6 +145,8 @@ fastify.register(inferDebugFastifyPlugin, { childPortEnvVar: 'PORT' });
 // attach in the onReady hook, the child stops in onClose.
 // The core is reachable as fastify.inferDebug for programmatic control.
 ```
+
+Full runnable version: [`examples/fastify`](examples/fastify).
 
 ## Quickstart (raw Node)
 
@@ -155,6 +161,55 @@ server.listen(3000, () => core.attachServer(server));
 ```
 
 Full runnable version: [`examples/raw-node`](examples/raw-node).
+
+## Writing your own adapter (Koa, Hono, anything)
+
+The shipped NestJS / Express / Fastify adapters are **reference
+implementations**, not the boundary of what works — the Express one is 8 lines
+of code. The core is framework-free; plugging it into any other framework or
+your own routing layer is a four-call contract:
+
+1. `const core = new InferDebugCore(options)` — same `TInferDebugOptions`
+   everywhere.
+2. At the framework's **earliest pre-routing stage**, give the core first
+   refusal: `if (core.handleHttp(req, res)) return;` — it answers the control
+   API, `/json/*` discovery, and header-marked requests; everything else falls
+   through to your app. If the framework must commit to manual response
+   handling *before* you answer (like Fastify's `reply.hijack()`), pre-check
+   with `core.shouldHandle(req)` — true exactly when `handleHttp` will handle.
+3. Once the HTTP server exists: `core.attachServer(server)` — discovers the
+   app port (child gets port+1) and installs the inspector WS upgrade hook.
+   This is server-level, so it works identically under any framework.
+4. On shutdown: `core.close()` — stops the debug child.
+
+Three things that bite when hand-rolling:
+
+- **Original URL.** The core matches on `req.originalUrl ?? req.url`. If your
+  framework rewrites `req.url` while mounting middleware, pass the original.
+- **Raw req/res.** Hand the core the raw Node `http.IncomingMessage` /
+  `ServerResponse` (e.g. Fastify's `request.raw` / `reply.raw`), not framework
+  wrapper objects.
+- **Parsed bodies.** If a body parser ran before you, leave the parsed value
+  on `req.body` — the core re-sends it with a recalculated `Content-Length`.
+
+Skeleton for a middleware-style framework (Koa shown; others look the same):
+
+```javascript
+const { InferDebugCore } = require('infer-debug');
+const core = new InferDebugCore({ childPortEnvVar: 'PORT' });
+
+app.use(async (ctx, next) => {
+  if (core.shouldHandle(ctx.req)) {
+    ctx.respond = false;               // we take over the raw response
+    core.handleHttp(ctx.req, ctx.res); // control API, /json/*, marked
+    return;
+  }
+  await next();
+});
+
+const server = http.createServer(app.callback());
+server.listen(3000, () => core.attachServer(server));
+```
 
 ## Enabling / disabling
 
@@ -375,6 +430,17 @@ the inspector stay on loopback inside the container, so the suite also
 demonstrates debugger access tunnelled through the single app port — the exact
 scenario the package is built for. The e2e runner needs Node.js >= 22 (built-in
 WebSocket client for CDP).
+
+### Runnable adapter examples (Docker)
+
+The same one-port scenario is packaged per adapter under `examples/` — one
+container each for Express, Fastify, and NestJS, each publishing only its app
+port (3001/3002/3003):
+
+```bash
+npm run compose:examples        # build + start all three
+node bin/infer-debug.js http://localhost:3002   # drive any of them with the CLI
+```
 
 ### Demo path
 

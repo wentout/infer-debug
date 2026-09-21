@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // node16 resolution so the example imports 'infer-debug/nestjs' exactly as
+    // an external consumer would (Node resolves the same self-name at runtime).
+    "module": "node16",
+    "moduleResolution": "node16",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*"]
+}
