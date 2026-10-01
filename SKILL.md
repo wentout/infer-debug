@@ -132,6 +132,10 @@ get the attachment; they keep the kill switch.
 4. `GET /json/list` (fixed path, not under basePath) → take `id` of the
    target, open `ws://<app-host>:<app-port>/<id>` — the inspector WS is
    tunnelled through the app port, uuid-shaped path, no headers needed.
+   (Any OTHER WebSocket upgrade carrying the trigger header is relayed
+   wholesale to the child through the app port — same port, no tunnel
+   path — so an agent can reach the child's own WebSocket endpoints, e.g.
+   strategy's `/strategy`, from outside; `503` while the child is down.)
 5. Speak CDP. Minimal client (Node ≥ 22, global WebSocket):
 
    ```javascript

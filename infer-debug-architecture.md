@@ -26,13 +26,16 @@
 3. **Middleware reads `req.originalUrl`, not `req.url`.** Nest 11 converts
    `forRoutes('*')` into a `{*path}` Express 5 wildcard mount, which strips `req.url`
    to `'/'` inside the middleware — `originalUrl` always keeps the real path.
-4. **Upgrade hook only tunnels inspector-shaped paths.** The WS gate is
-   `isChildReady` **and** a uuid-shaped path (`/<target-uuid>`, as `/json/list`
-   reports it) — never the trigger header, because DevTools cannot send custom
-   headers on its WebSocket handshake. Foreign upgrades (socket.io, app
-   WebSockets) are left to other listeners in all states. The path check is
-   routing, not security: the tunnel exists so the host's own sockets survive
-   a debug session, not to authenticate anyone.
+4. **Upgrade hook: dual gate.** The uuid-shaped inspector path
+   (`/<target-uuid>`, as `/json/list` reports it) is tunnelled when
+   `isChildReady` — DevTools cannot send custom headers on its WebSocket
+   handshake, so its gate is the path. Every OTHER upgrade carrying the
+   trigger header is relayed wholesale to the secondary process (header
+   consumed, never forwarded; a non-101 answer from the secondary is
+   forwarded to the client; `503` while the secondary is down). Foreign
+   unmarked upgrades (socket.io, app WebSockets) are left to other listeners
+   in all states. The path check is routing, not security: the tunnel exists
+   so the host's own sockets survive a debug session, not to authenticate anyone.
 5. **Trigger header, no route registry.** Requests carrying the `infer-debug`
    header (name configurable via `headerName`) are proxied to the child; the
    header is consumed, never forwarded, and proxied responses carry it back

@@ -178,8 +178,13 @@ your own routing layer is a four-call contract:
    handling *before* you answer (like Fastify's `reply.hijack()`), pre-check
    with `core.shouldHandle(req)` — true exactly when `handleHttp` will handle.
 3. Once the HTTP server exists: `core.attachServer(server)` — discovers the
-   app port (child gets port+1) and installs the inspector WS upgrade hook.
-   This is server-level, so it works identically under any framework.
+   app port (child gets port+1) and installs the WS upgrade hook.
+   This is server-level, so it works identically under any framework. The
+   hook answers three kinds of upgrade: the uuid-shaped inspector path
+   (DevTools tunnel), and — new — any OTHER upgrade carrying the trigger
+   header is relayed wholesale to the secondary process (the header is
+   consumed, never forwarded); upgrades without the header are left to your
+   app. Marked upgrades get a clean `503` while the secondary is down.
 4. On shutdown: `core.close()` — stops the debug child.
 
 Three things that bite when hand-rolling:

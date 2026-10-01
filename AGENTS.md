@@ -113,9 +113,11 @@ npm run compose:examples  # one docker container per adapter example
    imports under `src/core/` — the core speaks `TRequestLike`/`TResponseLike`
    (structural over `http.IncomingMessage`/`ServerResponse`). New behavior goes
    to the core; adapters only translate framework lifecycle/routing into core
-   calls. The WS upgrade gate is the uuid-shaped inspector path
-   (`isInspectorUpgradePath`), never the trigger header — DevTools cannot send
-   custom headers on its handshake. Custom adapters are first-class: the
+   calls. The WS upgrade gate is dual: the uuid-shaped inspector path
+   (`isInspectorUpgradePath`) gates DevTools — it cannot send custom headers
+   on its handshake — and the trigger header gates every OTHER upgrade:
+   header-marked non-inspector upgrades are relayed wholesale to the
+   secondary (header consumed, invariant 7). Custom adapters are first-class: the
    contract is constructor → first-refusal `handleHttp`/`shouldHandle`
    pre-routing → `attachServer` → `close` (README "Writing your own adapter").
 

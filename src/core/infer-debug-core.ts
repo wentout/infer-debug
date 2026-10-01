@@ -297,7 +297,7 @@ export class InferDebugCore {
    * see examples/nest-route-table); the core itself stays route-agnostic.
    */
   isMarkedForDebug(req: TRequestLike): boolean {
-    return req.headers[this.options.headerName] !== undefined;
+    return req.headers?.[this.options.headerName] !== undefined;
   }
 
   /** Child is up and its HTTP port is known — safe to proxy. */
@@ -402,18 +402,45 @@ export class InferDebugCore {
   }
 
   handleUpgrade(request: http.IncomingMessage, socket: Duplex, _head: Buffer): void {
-    if (!this.isChildReady || !isInspectorUpgradePath(request.url)) {
+    const inspectorPath = isInspectorUpgradePath(request.url);
+    const marked = this.isMarkedForDebug(request);
+    if (!inspectorPath && !marked) {
       // Not ours: leave the socket to other upgrade listeners instead of
       // destroying it — the host app may serve its own WebSockets.
       return;
     }
+    if (!this.isChildReady || (!inspectorPath && this.childPort === null)) {
+      // Inspector probes keep their historical behaviour (silently left;
+      // DevTools retries while the child starts). A MARKED upgrade names
+      // the secondary explicitly: answer like proxyToChild does instead of
+      // leaving the socket in limbo.
+      if (inspectorPath) {
+        return;
+      }
+      socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     this.touchActivity('handleUpgrade');
+    // The uuid path gates DevTools (it cannot send custom headers); the
+    // trigger header gates every OTHER upgrade: relayed wholesale to the
+    // secondary process, which owns the path (e.g. strategy's /strategy).
+    // The header is consumed, never forwarded (invariant 7): the secondary
+    // runs the same module and would relay to its own grandchild.
+    const relayPort = inspectorPath ? this.options.inspectorPort : this.childPort;
+    const headers: Record<string, string | string[] | undefined> = {
+      ...request.headers,
+      host: `127.0.0.1:${relayPort}`,
+    };
+    if (!inspectorPath) {
+      delete headers[this.options.headerName];
+    }
     const wsReq = http.request({
       hostname: '127.0.0.1',
-      port: this.options.inspectorPort,
+      port: relayPort,
       path: request.url,
       method: request.method,
-      headers: { ...request.headers, host: `127.0.0.1:${this.options.inspectorPort}` },
+      headers,
     });
 
     wsReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
@@ -426,7 +453,7 @@ export class InferDebugCore {
       );
       const trackIn = new Transform({
         transform: (chunk: Buffer, _enc, cb) => {
-          this.touchActivity('wsDataFromInspector');
+          this.touchActivity(inspectorPath ? 'wsDataFromInspector' : 'wsDataFromChild');
           cb(null, chunk);
         },
       });
@@ -439,6 +466,20 @@ export class InferDebugCore {
       proxySocket.pipe(trackIn).pipe(socket);
       socket.pipe(trackOut).pipe(proxySocket);
       proxySocket.write(proxyHead);
+    });
+
+    wsReq.on('response', (proxyRes) => {
+      // The relay target refused the upgrade (e.g. a bad token on the
+      // secondary's channel): forward the real HTTP answer instead of
+      // limbo, then let the stream close.
+      socket.write(
+        `HTTP/${proxyRes.httpVersion} ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n` +
+          Object.entries(proxyRes.headers)
+            .map(([k, v]) => `${k}: ${v}`)
+            .join('\r\n') +
+          '\r\n\r\n',
+      );
+      proxyRes.pipe(socket);
     });
 
     wsReq.on('error', (err) => {
