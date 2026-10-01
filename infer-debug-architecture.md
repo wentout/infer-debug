@@ -26,16 +26,20 @@
 3. **Middleware reads `req.originalUrl`, not `req.url`.** Nest 11 converts
    `forRoutes('*')` into a `{*path}` Express 5 wildcard mount, which strips `req.url`
    to `'/'` inside the middleware — `originalUrl` always keeps the real path.
-4. **Upgrade hook: dual gate.** The uuid-shaped inspector path
-   (`/<target-uuid>`, as `/json/list` reports it) is tunnelled when
-   `isChildReady` — DevTools cannot send custom headers on its WebSocket
-   handshake, so its gate is the path. Every OTHER upgrade carrying the
-   trigger header is relayed wholesale to the secondary process (header
-   consumed, never forwarded; a non-101 answer from the secondary is
-   forwarded to the client; `503` while the secondary is down). Foreign
+4. **Upgrade hook: dual gate, single decision point.** The uuid-shaped
+   inspector path (`/<target-uuid>`, as `/json/list` reports it) is tunnelled
+   when `isChildReady` — DevTools cannot send custom headers on its
+   WebSocket handshake, so its gate is the path. Any OTHER upgrade carrying
+   the trigger header AND listed in `wsRelay` (default `[]`) is relayed
+   wholesale to the secondary process (header consumed, never forwarded; a
+   non-101 answer from the secondary is forwarded to the client; `503` while
+   the secondary is down). Every upgrade the hook does not relay goes to the
+   `appUpgradeHandler` option — the app hands its upgrade handling to the
+   core, so the two never race on one socket. Without the option, foreign
    unmarked upgrades (socket.io, app WebSockets) are left to other listeners
-   in all states. The path check is routing, not security: the tunnel exists
-   so the host's own sockets survive a debug session, not to authenticate anyone.
+   in all states, exactly as before. The path check is routing, not
+   security: the tunnel exists so the host's own sockets survive a debug
+   session, not to authenticate anyone.
 5. **Trigger header, no route registry.** Requests carrying the `infer-debug`
    header (name configurable via `headerName`) are proxied to the child; the
    header is consumed, never forwarded, and proxied responses carry it back

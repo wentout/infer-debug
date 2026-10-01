@@ -180,11 +180,16 @@ your own routing layer is a four-call contract:
 3. Once the HTTP server exists: `core.attachServer(server)` — discovers the
    app port (child gets port+1) and installs the WS upgrade hook.
    This is server-level, so it works identically under any framework. The
-   hook answers three kinds of upgrade: the uuid-shaped inspector path
-   (DevTools tunnel), and — new — any OTHER upgrade carrying the trigger
-   header is relayed wholesale to the secondary process (the header is
-   consumed, never forwarded); upgrades without the header are left to your
-   app. Marked upgrades get a clean `503` while the secondary is down.
+   hook IS the upgrade decision point: the uuid-shaped inspector path
+   (DevTools tunnel) goes to the secondary's inspector; any other upgrade
+   carrying the trigger header AND listed in the `wsRelay` option is relayed
+   wholesale to the secondary process (header consumed, never forwarded);
+   every upgrade it does not relay is handed to the `appUpgradeHandler`
+   option — hand it your app's upgrade handler (e.g. a mounted strategy
+   channel's) and nothing else needs wiring. `wsRelay` defaults to `[]`:
+   with the default the hook leaves foreign upgrades alone exactly as
+   before. Marked `wsRelay` upgrades get a clean `503` while the secondary
+   is down.
 4. On shutdown: `core.close()` — stops the debug child.
 
 Three things that bite when hand-rolling:

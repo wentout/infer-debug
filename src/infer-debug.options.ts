@@ -99,7 +99,32 @@ export type TInferDebugOptions = {
    * the app's bound port (from the server's `listening` event) + 1.
    */
   childPort?: number;
+
+  /**
+   * WebSocket upgrade paths that FOLLOW THE MARK: a marked upgrade whose path
+   * is listed here is relayed wholesale to the secondary process (which owns
+   * the path — e.g. a mounted strategy channel). Marked upgrades on any other
+   * path, and all unmarked upgrades, are handed to `appUpgradeHandler`.
+   * Default: [] — no relaying; with the default the upgrade hook behaves
+   * exactly as before for every existing user.
+   */
+  wsRelay?: string[];
+
+  /**
+   * The app's own WebSocket upgrade handling. infer-debug is the single
+   * upgrade decision point on the server: it relays what the routing table
+   * sends to the secondary (inspector path; marked wsRelay paths) and calls
+   * this handler for EVERY upgrade it does not relay. When unset, non-relayed
+   * upgrades are left to other listeners, as before.
+   */
+  appUpgradeHandler?: TUpgradeHandler;
 };
+
+export type TUpgradeHandler = (
+  request: import('http').IncomingMessage,
+  socket: import('stream').Duplex,
+  head: Buffer,
+) => void;
 
 export type TResolvedInferDebugOptions = Required<
   Pick<
@@ -107,7 +132,9 @@ export type TResolvedInferDebugOptions = Required<
     'enabled' | 'inspectorPort' | 'idleTimeoutMs' | 'idleCheckIntervalMs' | 'logBufferSize' | 'childEntry' | 'childPortEnvVar' | 'basePath' | 'headerName'
   >
 > &
-  Pick<TInferDebugOptions, 'childReadyStdoutPattern' | 'healthcheckPath' | 'childPort'>;
+  Pick<TInferDebugOptions, 'childReadyStdoutPattern' | 'healthcheckPath' | 'childPort' | 'appUpgradeHandler'> & {
+    wsRelay: string[];
+  };
 
 export const DEFAULT_BASE_PATH = '/infer-debug';
 export const DEFAULT_HEADER_NAME = 'infer-debug';
@@ -118,7 +145,7 @@ export function normalizeBasePath(basePath: string = DEFAULT_BASE_PATH): string 
 }
 
 export function resolveInferDebugOptions(options: TInferDebugOptions = {}): TResolvedInferDebugOptions {
-  return {
+  const resolved: TResolvedInferDebugOptions = {
     enabled: options.enabled ?? process.env[options.enabledEnvVar ?? 'INFER_DEBUG'] === 'true',
     inspectorPort: options.inspectorPort ?? 9229,
     idleTimeoutMs: options.idleTimeoutMs ?? 3 * 60 * 1000,
@@ -132,7 +159,13 @@ export function resolveInferDebugOptions(options: TInferDebugOptions = {}): TRes
     childReadyStdoutPattern: options.childReadyStdoutPattern,
     healthcheckPath: options.healthcheckPath,
     childPort: options.childPort,
+    wsRelay: options.wsRelay ?? [],
   };
+  // only present when set — keeps the resolved object free of undefined keys
+  if (options.appUpgradeHandler !== undefined) {
+    resolved.appUpgradeHandler = options.appUpgradeHandler;
+  }
+  return resolved;
 }
 
 /**

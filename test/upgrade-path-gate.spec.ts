@@ -94,7 +94,7 @@ describe('handleUpgrade marked-upgrade relay (rule 2)', () => {
   }
 
   it('relays a marked non-inspector upgrade to the child port, header consumed', () => {
-    const core = new InferDebugCore({ enabled: true, childPort: 3001 });
+    const core = new InferDebugCore({ enabled: true, childPort: 3001, wsRelay: ['/strategy'] });
     (core as any as { isChildReady: boolean; childPort: number | null }).isChildReady = true;
     (core as any as { isChildReady: boolean; childPort: number | null }).childPort = 3001;
     mockRequest.mockReturnValue(new EventEmitter());
@@ -115,7 +115,7 @@ describe('handleUpgrade marked-upgrade relay (rule 2)', () => {
   });
 
   it('forwards a non-101 answer from the secondary instead of limbo', () => {
-    const core = new InferDebugCore({ enabled: true, childPort: 3001 });
+    const core = new InferDebugCore({ enabled: true, childPort: 3001, wsRelay: ['/strategy'] });
     (core as any as { isChildReady: boolean; childPort: number | null }).isChildReady = true;
     (core as any as { isChildReady: boolean; childPort: number | null }).childPort = 3001;
     const wsReq = new EventEmitter();
@@ -141,7 +141,7 @@ describe('handleUpgrade marked-upgrade relay (rule 2)', () => {
   });
 
   it('answers 503 when the secondary is not running', () => {
-    const core = new InferDebugCore({ enabled: true, childPort: 3001 });
+    const core = new InferDebugCore({ enabled: true, childPort: 3001, wsRelay: ['/strategy'] });
 
     const request = makeMarkedRequest('/strategy?token=abc');
     const socket = makeSocket();
@@ -161,6 +161,61 @@ describe('handleUpgrade marked-upgrade relay (rule 2)', () => {
     const request = new PassThrough() as any;
     (request as { url?: string }).url = '/strategy?token=abc';
     (request as { headers?: Record<string, string> }).headers = {};
+    const socket = makeSocket();
+
+    core.handleUpgrade(request as EventEmitter as any, socket, Buffer.alloc(0));
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(socket.destroy).not.toHaveBeenCalled();
+    expect(socket.write).not.toHaveBeenCalled();
+  });
+
+  it('marked upgrade on a path NOT in wsRelay goes to the app handler in main, with one log line', () => {
+    const appUpgradeHandler = jest.fn();
+    const log = jest.fn();
+    const core = new InferDebugCore(
+      { enabled: true, childPort: 3001, wsRelay: ['/elsewhere'], appUpgradeHandler },
+      { log, warn: jest.fn(), error: jest.fn() },
+    );
+    (core as any as { isChildReady: boolean; childPort: number | null }).isChildReady = true;
+    (core as any as { isChildReady: boolean; childPort: number | null }).childPort = 3001;
+
+    const request = makeMarkedRequest('/strategy?token=abc');
+    const socket = makeSocket();
+
+    core.handleUpgrade(request as EventEmitter as any, socket, Buffer.alloc(0));
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(appUpgradeHandler).toHaveBeenCalledWith(request, socket, expect.anything());
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('marked upgrade on /strategy not in wsRelay'),
+    );
+  });
+
+  it('unmarked upgrade goes to the app handler when one is set', () => {
+    const appUpgradeHandler = jest.fn();
+    const core = new InferDebugCore({ enabled: true, childPort: 3001, appUpgradeHandler });
+    (core as any as { isChildReady: boolean; childPort: number | null }).isChildReady = true;
+    (core as any as { isChildReady: boolean; childPort: number | null }).childPort = 3001;
+
+    const request = new PassThrough() as any;
+    (request as { url?: string }).url = '/strategy?token=abc';
+    (request as { headers?: Record<string, string> }).headers = {};
+    const socket = makeSocket();
+
+    core.handleUpgrade(request as EventEmitter as any, socket, Buffer.alloc(0));
+
+    expect(mockRequest).not.toHaveBeenCalled();
+    expect(appUpgradeHandler).toHaveBeenCalledWith(request, socket, expect.anything());
+    expect(socket.destroy).not.toHaveBeenCalled();
+  });
+
+  it('default wsRelay [] relays nothing — marked upgrades are left alone (back-compat)', () => {
+    const core = new InferDebugCore({ enabled: true, childPort: 3001 });
+    (core as any as { isChildReady: boolean; childPort: number | null }).isChildReady = true;
+    (core as any as { isChildReady: boolean; childPort: number | null }).childPort = 3001;
+
+    const request = makeMarkedRequest('/strategy?token=abc');
     const socket = makeSocket();
 
     core.handleUpgrade(request as EventEmitter as any, socket, Buffer.alloc(0));

@@ -115,9 +115,13 @@ npm run compose:examples  # one docker container per adapter example
    to the core; adapters only translate framework lifecycle/routing into core
    calls. The WS upgrade gate is dual: the uuid-shaped inspector path
    (`isInspectorUpgradePath`) gates DevTools — it cannot send custom headers
-   on its handshake — and the trigger header gates every OTHER upgrade:
-   header-marked non-inspector upgrades are relayed wholesale to the
-   secondary (header consumed, invariant 7). Custom adapters are first-class: the
+   on its handshake — and the trigger header gates upgrades on `wsRelay`
+   paths (default `[]`, relay off): header-marked upgrades on those paths go
+   to the secondary wholesale (header consumed, invariant 7), a non-101
+   answer is forwarded, `503` while the secondary is down. Every upgrade
+   infer-debug does NOT relay goes to the `appUpgradeHandler` option —
+   infer-debug is the single upgrade decision point on the server.
+   Custom adapters are first-class: the
    contract is constructor → first-refusal `handleHttp`/`shouldHandle`
    pre-routing → `attachServer` → `close` (README "Writing your own adapter").
 

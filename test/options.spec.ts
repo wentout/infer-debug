@@ -23,6 +23,7 @@ describe('resolveInferDebugOptions', () => {
       childReadyStdoutPattern: undefined,
       healthcheckPath: undefined,
       childPort: undefined,
+      wsRelay: [],
     });
   });
 

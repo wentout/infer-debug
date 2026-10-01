@@ -404,14 +404,30 @@ export class InferDebugCore {
   handleUpgrade(request: http.IncomingMessage, socket: Duplex, _head: Buffer): void {
     const inspectorPath = isInspectorUpgradePath(request.url);
     const marked = this.isMarkedForDebug(request);
-    if (!inspectorPath && !marked) {
-      // Not ours: leave the socket to other upgrade listeners instead of
-      // destroying it — the host app may serve its own WebSockets.
+    // The routing table (single decision point — the app hands its upgrade
+    // handling to infer-debug, attachServer first):
+    //   inspector uuid path            → the secondary's inspector
+    //   marked + path in wsRelay       → relayed whole to the secondary
+    //   marked + path not in wsRelay   → the app handler in MAIN (mark ignored)
+    //   unmarked                       → the app handler in MAIN
+    const path = (request.url || '').split('?')[0];
+    const relayToChild = marked && !inspectorPath && this.options.wsRelay.indexOf(path) !== -1;
+    if (!inspectorPath && !relayToChild) {
+      if (marked) {
+        this.logger.log(
+          `[InferDebug] marked upgrade on ${path} not in wsRelay — served by main`,
+        );
+      }
+      if (this.options.appUpgradeHandler) {
+        this.options.appUpgradeHandler(request, socket, _head);
+      }
+      // Without an app handler: leave the socket to other upgrade listeners
+      // instead of destroying it — the host app may serve its own WebSockets.
       return;
     }
     if (!this.isChildReady || (!inspectorPath && this.childPort === null)) {
       // Inspector probes keep their historical behaviour (silently left;
-      // DevTools retries while the child starts). A MARKED upgrade names
+      // DevTools retries while the child starts). A relay upgrade names
       // the secondary explicitly: answer like proxyToChild does instead of
       // leaving the socket in limbo.
       if (inspectorPath) {
@@ -423,8 +439,8 @@ export class InferDebugCore {
     }
     this.touchActivity('handleUpgrade');
     // The uuid path gates DevTools (it cannot send custom headers); the
-    // trigger header gates every OTHER upgrade: relayed wholesale to the
-    // secondary process, which owns the path (e.g. strategy's /strategy).
+    // trigger header gates upgrades on wsRelay paths: relayed wholesale to
+    // the secondary process, which owns the path (e.g. strategy's /strategy).
     // The header is consumed, never forwarded (invariant 7): the secondary
     // runs the same module and would relay to its own grandchild.
     const relayPort = inspectorPath ? this.options.inspectorPort : this.childPort;
